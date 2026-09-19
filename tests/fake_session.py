@@ -1,5 +1,7 @@
 """A tiny stand-in for DotaSession: simulates just enough of a 1v1 lane to exercise the env without Dota."""
+
 import queue
+from typing import ClassVar
 
 from dota2_env.bridge.constants import (
     DOTA_GAMERULES_STATE_PRE_GAME,
@@ -9,24 +11,32 @@ from dota2_env.bridge.constants import (
     UNIT_TYPE_LANE_CREEP,
     UNIT_TYPE_TOWER,
 )
-from dota2_env.bridge.session import ActionDelivery
 from dota2_env.bridge.protos.dota_gcmessages_common_bot_script_pb2 import (
     CMsgBotWorldState,
 )
+from dota2_env.bridge.session import ActionDelivery
 
 HERO_HANDLE, ENEMY_HERO_HANDLE, ENEMY_CREEP_HANDLE, ALLY_CREEP_HANDLE = 1, 2, 10, 11
 HERO_DAMAGE = 50
 
 
 def _add_unit(ws, handle, unit_type, team, name, x, y, health, health_max=None, **fields):
-    unit = ws.units.add(handle=handle, unit_type=unit_type, team_id=team, name=name, health=health,
-                        health_max=health_max or health, is_alive=health > 0, **fields)
+    unit = ws.units.add(
+        handle=handle,
+        unit_type=unit_type,
+        team_id=team,
+        name=name,
+        health=health,
+        health_max=health_max or health,
+        is_alive=health > 0,
+        **fields,
+    )
     unit.location.x, unit.location.y, unit.location.z = x, y, 0
     return unit
 
 
 class FakeSession:
-    instances = []
+    instances: ClassVar[list['FakeSession']] = []
 
     def __init__(self, team_id, keep_files=False, **game_kwargs):
         self.team_id = team_id
@@ -54,8 +64,7 @@ class FakeSession:
     def observe(self, timeout):
         if self.feed_ended:
             raise queue.Empty
-        ws = CMsgBotWorldState(team_id=self.team_id, dota_time=self.dota_time,
-                               game_state=DOTA_GAMERULES_STATE_PRE_GAME)
+        ws = CMsgBotWorldState(team_id=self.team_id, dota_time=self.dota_time, game_state=DOTA_GAMERULES_STATE_PRE_GAME)
         self.dota_time += 0.2
         ws.players.add(player_id=0, team_id=TEAM_RADIANT, kills=self.kills, deaths=self.deaths, is_alive=True)
         ws.players.add(player_id=5, team_id=TEAM_DIRE, is_alive=True)
@@ -67,19 +76,64 @@ class FakeSession:
         if self.hero_hidden:
             return ws
 
-        hero = _add_unit(ws, HERO_HANDLE, UNIT_TYPE_HERO, TEAM_RADIANT, 'npc_dota_hero_nevermore', *self.hero_xy,
-                         health=500, player_id=0, attack_damage=HERO_DAMAGE, attack_range=500, level=1,
-                         mana=200, mana_max=200, last_hits=self.last_hits, ability_points=1)
+        hero = _add_unit(
+            ws,
+            HERO_HANDLE,
+            UNIT_TYPE_HERO,
+            TEAM_RADIANT,
+            'npc_dota_hero_nevermore',
+            *self.hero_xy,
+            health=500,
+            player_id=0,
+            attack_damage=HERO_DAMAGE,
+            attack_range=500,
+            level=1,
+            mana=200,
+            mana_max=200,
+            last_hits=self.last_hits,
+            ability_points=1,
+        )
         for slot in range(6):
-            hero.abilities.add(handle=200 + slot, ability_id=5059 + slot, slot=slot, level=1 if slot == 0 else 0,
-                               is_fully_castable=slot == 0)
-        _add_unit(ws, ENEMY_HERO_HANDLE, UNIT_TYPE_HERO, TEAM_DIRE, 'npc_dota_hero_nevermore',
-                  self.hero_xy[0] + 900, self.hero_xy[1] + 900, health=500, player_id=5)
+            hero.abilities.add(
+                handle=200 + slot,
+                ability_id=5059 + slot,
+                slot=slot,
+                level=1 if slot == 0 else 0,
+                is_fully_castable=slot == 0,
+            )
+        _add_unit(
+            ws,
+            ENEMY_HERO_HANDLE,
+            UNIT_TYPE_HERO,
+            TEAM_DIRE,
+            'npc_dota_hero_nevermore',
+            self.hero_xy[0] + 900,
+            self.hero_xy[1] + 900,
+            health=500,
+            player_id=5,
+        )
         if self.creep_health > 0:
-            _add_unit(ws, ENEMY_CREEP_HANDLE, UNIT_TYPE_LANE_CREEP, TEAM_DIRE, 'npc_dota_creep_badguys_melee',
-                      self.hero_xy[0] + 300, self.hero_xy[1], health=self.creep_health, health_max=550)
-        _add_unit(ws, ALLY_CREEP_HANDLE, UNIT_TYPE_LANE_CREEP, TEAM_RADIANT, 'npc_dota_creep_goodguys_melee',
-                  self.hero_xy[0] + 200, self.hero_xy[1] + 100, health=550)
+            _add_unit(
+                ws,
+                ENEMY_CREEP_HANDLE,
+                UNIT_TYPE_LANE_CREEP,
+                TEAM_DIRE,
+                'npc_dota_creep_badguys_melee',
+                self.hero_xy[0] + 300,
+                self.hero_xy[1],
+                health=self.creep_health,
+                health_max=550,
+            )
+        _add_unit(
+            ws,
+            ALLY_CREEP_HANDLE,
+            UNIT_TYPE_LANE_CREEP,
+            TEAM_RADIANT,
+            'npc_dota_creep_goodguys_melee',
+            self.hero_xy[0] + 200,
+            self.hero_xy[1] + 100,
+            health=550,
+        )
         return ws
 
     def act(self, dota_time, actions, extra_actions=(), draw=()):

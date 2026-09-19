@@ -1,4 +1,5 @@
 """Game -> Python channel: length-prefixed CMsgBotWorldState protobufs over TCP."""
+
 import logging
 import socket
 import time
@@ -7,7 +8,7 @@ from struct import unpack
 from dota2_env.bridge.constants import ACTIONABLE_GAME_STATES, DOTA_GAMERULES_STATE_POST_GAME
 from dota2_env.bridge.protos.dota_gcmessages_common_bot_script_pb2 import CMsgBotWorldState
 
-logger = logging.getLogger("dota2_env")
+logger = logging.getLogger('dota2_env')
 
 HEADER_BYTES = 4
 
@@ -17,15 +18,15 @@ def _recv_exact(sock, n_bytes):
     while n_bytes > 0:
         chunk = sock.recv(n_bytes)
         if not chunk:
-            raise ConnectionError("worldstate socket closed")
+            raise ConnectionError('worldstate socket closed')
         chunks.append(chunk)
         n_bytes -= len(chunk)
-    return b"".join(chunks)
+    return b''.join(chunks)
 
 
 def read_raw_world_state(sock):
     """One serialized CMsgBotWorldState payload (without the length prefix)."""
-    n_bytes = unpack("<I", _recv_exact(sock, HEADER_BYTES))[0]
+    n_bytes = unpack('<I', _recv_exact(sock, HEADER_BYTES))[0]
     return _recv_exact(sock, n_bytes)
 
 
@@ -39,7 +40,7 @@ def read_world_state(sock):
     return parse_world_state(read_raw_world_state(sock))
 
 
-def connect(port, host="127.0.0.1", timeout=None, retry_interval=1.0):
+def connect(port, host='127.0.0.1', timeout=None, retry_interval=1.0):
     """Block until Dota opens the worldstate port (it only listens once a game is being hosted)."""
     deadline = None if timeout is None else time.time() + timeout
     while True:
@@ -48,7 +49,7 @@ def connect(port, host="127.0.0.1", timeout=None, retry_interval=1.0):
             return sock
         sock.close()
         if deadline is not None and time.time() > deadline:
-            raise TimeoutError("could not connect to worldstate port {}".format(port))
+            raise TimeoutError(f'could not connect to worldstate port {port}')
         time.sleep(retry_interval)
 
 
@@ -64,7 +65,7 @@ def worldstate_listener(port, queue, max_queue_size=2, only_actionable=True):
             raw = read_raw_world_state(sock)
             world_state = parse_world_state(raw)
         except (ConnectionError, OSError) as e:
-            logger.debug("worldstate connection lost (%s), reconnecting", e)
+            logger.debug(f'worldstate connection lost ({e}), reconnecting')
             sock.close()
             sock = connect(port, timeout=30, retry_interval=0.5)
             continue

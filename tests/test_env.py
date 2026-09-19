@@ -42,7 +42,7 @@ def test_passes_gymnasium_env_checker(env):
 
 
 def test_reset_waits_for_hero_and_buys_starting_items(env):
-    observation, info = env.reset(seed=0)
+    observation, _ = env.reset(seed=0)
     assert env.observation_space.contains(observation)
     assert observation['hero'][4] == 1.0  # is_alive
     assert observation['unit_mask'].sum() == 4  # enemy hero, enemy creep, ally creep, own tower
@@ -104,7 +104,7 @@ def test_deaths_terminate_and_time_truncates():
 
     env.reset()
     last_session().deaths = 2  # any cause counts, e.g. dying to the tower
-    _, reward, terminated, truncated, info = env.step(NOOP)
+    _, _, terminated, truncated, info = env.step(NOOP)
     assert terminated and info['winner'] == dota2_env.TEAM_DIRE
     assert info['reward']['win'] == -1.0 and info['reward']['death'] == 2
     env.close()
@@ -154,7 +154,7 @@ def test_worldstate_socket_framing_survives_fragmentation():
     def serve():
         conn, _ = server.accept()
         for i in range(0, len(frame), 1000):  # dribble it out in pieces
-            conn.sendall(frame[i:i + 1000])
+            conn.sendall(frame[i : i + 1000])
         conn.sendall(frame)
         conn.close()
 
@@ -204,7 +204,6 @@ def test_action_delivery_is_reported(env):
     *_, info = env.step(NOOP)
     assert info['action_delivery']['executed'] == 1 and info['action_delivery']['last_status'] == 'executed'
     assert info['action_delivery']['last_delay'] == pytest.approx(0.1)
-
 
 
 def test_extras_of_lost_actions_are_sent_again(env):

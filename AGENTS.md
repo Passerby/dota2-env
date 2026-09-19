@@ -23,6 +23,9 @@ noise. Match the surrounding code where it already has a convention; where it do
 - No essay at the top of a file and no long comment block after a `class` line. One short module
   docstring, one short class docstring.
 - Docstrings: 1-3 lines, Google style, args/returns only when non-obvious.
+- A usage example in a module docstring is indented four spaces, the way `examples/` and `scripts/`
+  already do it. The formatter strips that indent when *every* body line is indented, so keep one
+  flush-left line of prose above the example (a `>>>` prompt works for Python snippets).
 - Client quirks (hidden hero after respawn, feed stopping at match end) get one line in code naming
   the constraint plus a pointer to `docs/VERSION_DIFF.md`, not a ten-line explanation inline.
 
@@ -124,8 +127,10 @@ def build_observation(world_state, team_id):
 
 - One logger per module: `logger = logging.getLogger('dota2_env')`, configured by the caller.
 - **f-strings everywhere**, including logging: `logger.info(f'bots folder: {self.dota_bot_path}')`.
-  (Ruff's `G004` is deliberately off; `%`-style survives in a few call sites and should be converted
-  when touched.)
+  Ruff's `G004` is deliberately off so that logging follows the same rule as everything else.
+  The one exception is a wide table row with many fields, where positional `str.format` stays more
+  readable than a line of inlined expressions: the unit and hero rows in `text.py` and the step line
+  in `examples/llm_agent.py`. Nothing else uses `str.format`.
 - Terse English. No manual level prefixes (`[Info]`, `[step 2]`) — the level field already says it.
 - `print` only in `examples/` and `scripts/`, where a human reads the output. Library code logs.
 
@@ -188,15 +193,18 @@ Run this over your own diff before calling it done.
 
 ## Adoption status
 
-The rules above are the target; the repo is partway there. Known gaps, largest first:
+The mechanical half has landed: `ruff check` and `ruff format` are clean over the whole tree, and
+the 13 findings that needed a hand (`ClassVar` on mutable class attributes, `actions as A`, a
+`dict()` call, a nested `if`, unused unpacked variables, an unowned file handle, two over-long
+diagnostic strings) are fixed. `str.format` survives only in the three wide table rows named in
+section 6; everything else is an f-string.
 
-1. **No type annotations** — 0 of 78 functions in `dota2_env/`. Annotate on touch.
+What is left, largest first:
+
+1. **No type annotations** — 0 of 78 functions in `dota2_env/`. Annotate on touch (section 4).
 2. **24 `_`-prefixed module-level functions and methods**, plus the matching `self._x` attributes,
-   need renaming (rule 3).
-3. **~50 backticks** inside Python docstrings and comments need stripping (rule 1).
-4. **4 `%`-style logging calls** to convert to f-strings (rule 6).
-5. `ruff check --fix` and `ruff format` have not been run over the tree yet: 81 lint findings, 63 of
-   them auto-fixable, plus ~740 formatting lines. Worth doing as one isolated commit.
-6. 16 findings survive the autofix and need a hand: 5 mutable class attributes missing `ClassVar`,
-   3 unused unpacked variables, 3 over-long diagnostic f-strings in `scripts/`, `actions as A`, a
-   `dict()` call, a nested `if`, and one `open()` without a context manager.
+   need renaming (section 3). This one changes call sites across the package, so do it as its own
+   commit rather than inside a feature change.
+3. **~50 backticks** inside Python docstrings and comments need stripping (section 1).
+4. **`_hero_vector` and `_clock` are called once each** — inline them when their module is next
+   touched (section 2).

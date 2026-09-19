@@ -3,25 +3,29 @@ import os
 
 import pytest
 
+from dota2_env.bridge.constants import TEAM_DIRE, TEAM_RADIANT
 from dota2_env.bridge.game import DotaGame
-from dota2_env.bridge.constants import TEAM_RADIANT, TEAM_DIRE
 
 
 @pytest.fixture
 def game(tmp_path):
     dota_path = tmp_path / 'game'
     (dota_path / 'dota' / 'scripts' / 'vscripts').mkdir(parents=True)
-    game = DotaGame(dota_path=str(dota_path), session_root=str(tmp_path / 'sessions'),
-                    heroes={TEAM_RADIANT: 'npc_dota_hero_nevermore', TEAM_DIRE: 'npc_dota_hero_sniper'})
+    game = DotaGame(
+        dota_path=str(dota_path),
+        session_root=str(tmp_path / 'sessions'),
+        heroes={TEAM_RADIANT: 'npc_dota_hero_nevermore', TEAM_DIRE: 'npc_dota_hero_sniper'},
+    )
     yield game
     game.remove_bot_symlink()
 
 
 def lua_string_payload(path):
-    text = open(path, encoding='utf-8').read()
+    with open(path, encoding='utf-8') as handle:
+        text = handle.read()
     assert text.startswith("return '") and text.endswith("'")
     # undo the lua escaping the same way lua would
-    return text[len("return '"):-1].replace("\\'", "'").replace('\\\\', '\\')
+    return text[len("return '") : -1].replace("\\'", "'").replace('\\\\', '\\')
 
 
 def test_session_folder_layout(game):

@@ -4,6 +4,7 @@
     python examples/latency_check.py --think 0.0
     python examples/latency_check.py --think 0.5
 """
+
 import argparse
 import time
 
@@ -27,7 +28,7 @@ def main():
             _, _, terminated, truncated, info = env.step(env.unwrapped.sample_legal_action())
             if terminated or truncated:
                 break
-        print('think={}s timescale={}'.format(args.think, args.timescale))
+        print(f'think={args.think}s timescale={args.timescale}')
         print('  action_delivery:', info['action_delivery'])
         print('  skipped_observations:', info['skipped_observations'])
     finally:

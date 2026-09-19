@@ -1,4 +1,5 @@
 """Launching the Dota 2 client and the file-based Python -> Lua channel."""
+
 import glob
 import json
 import logging
@@ -8,10 +9,11 @@ import subprocess
 import tempfile
 import uuid
 from sys import platform
+from typing import ClassVar
 
-from dota2_env.bridge.constants import TEAM_RADIANT, TEAM_DIRE, HOST_MODE_DEDICATED, HOST_MODE_GUI, HOST_MODE_GUI_MENU
+from dota2_env.bridge.constants import HOST_MODE_DEDICATED, HOST_MODE_GUI, HOST_MODE_GUI_MENU, TEAM_DIRE, TEAM_RADIANT
 
-logger = logging.getLogger("dota2_env")
+logger = logging.getLogger('dota2_env')
 
 LUA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lua')
 
@@ -19,9 +21,9 @@ DEFAULT_HERO = 'npc_dota_hero_nevermore'
 CONTROL_AGENT, CONTROL_BUILTIN, CONTROL_IDLE = 'agent', 'builtin', 'idle'
 
 DEFAULT_GAME_PATHS = {
-    'darwin': "~/Library/Application Support/Steam/steamapps/common/dota 2 beta/game",
-    'win32': r"C:\Program Files (x86)\Steam\steamapps\common\dota 2 beta\game",
-    'linux': "~/.steam/steam/steamapps/common/dota 2 beta/game",
+    'darwin': '~/Library/Application Support/Steam/steamapps/common/dota 2 beta/game',
+    'win32': r'C:\Program Files (x86)\Steam\steamapps\common\dota 2 beta\game',
+    'linux': '~/.steam/steam/steamapps/common/dota 2 beta/game',
 }
 
 
@@ -37,7 +39,7 @@ class DotaGame:
     CONFIG_FILENAME = 'config_auto'
     CONSOLE_LOG_FILENAME = 'console.log'
     LIVE_CONFIG_FILENAME = 'live_config_auto'
-    PORT_WORLDSTATES = {TEAM_RADIANT: 12120, TEAM_DIRE: 12121}
+    PORT_WORLDSTATES: ClassVar[dict[int, int]] = {TEAM_RADIANT: 12120, TEAM_DIRE: 12121}
 
     def __init__(
         self,
@@ -60,7 +62,7 @@ class DotaGame:
         self.control = dict(control or {TEAM_RADIANT: CONTROL_AGENT, TEAM_DIRE: CONTROL_IDLE})
         self.dota_path = dota_path or get_default_game_path()
         if not os.path.isdir(self.dota_path):
-            raise FileNotFoundError('Dota 2 not found at {}; set DOTA_GAME_PATH'.format(self.dota_path))
+            raise FileNotFoundError(f'Dota 2 not found at {self.dota_path}; set DOTA_GAME_PATH')
         self.host_timescale = host_timescale
         self.ticks_per_observation = ticks_per_observation
         self.game_mode = game_mode
@@ -98,12 +100,12 @@ class DotaGame:
 
     def _write_bot_data_file(self, filename_stem, data):
         """Write a lua file returning a JSON string, atomically so lua never loads a half-written file."""
-        filename = os.path.join(self.bot_path, '{}.lua'.format(filename_stem))
+        filename = os.path.join(self.bot_path, f'{filename_stem}.lua')
         # The payload sits inside a single-quoted lua string.
         payload = json.dumps(data, separators=(',', ':')).replace('\\', '\\\\').replace("'", "\\'")
         tmp_filename = filename + '.tmp'
         with open(tmp_filename, 'w', encoding='utf-8') as f:
-            f.write("return '{}'".format(payload))
+            f.write(f"return '{payload}'")
         os.replace(tmp_filename, filename)
 
     def _create_bot_path(self):
@@ -111,7 +113,7 @@ class DotaGame:
         if os.path.islink(self.dota_bot_path):
             os.remove(self.dota_bot_path)
         elif os.path.exists(self.dota_bot_path):
-            raise ValueError('There is already a bots directory ({})! Please remove manually.'.format(self.dota_bot_path))
+            raise ValueError(f'There is already a bots directory ({self.dota_bot_path})! Please remove manually.')
 
         self.session_folder = os.path.join(self.session_root, 'dota2_env_' + str(self.game_id))
         bot_path = os.path.join(self.session_folder, self.BOTS_FOLDER_NAME)
@@ -124,12 +126,14 @@ class DotaGame:
         shutil.copytree(os.path.join(LUA_DIR, 'actions'), os.path.join(bot_path, 'actions'))
         # Dota loads bot_<hero>.lua for each bot hero; every configured hero gets the same script.
         for hero in set(self.heroes.values()):
-            shutil.copy(os.path.join(LUA_DIR, 'bot_controlled.lua.tpl'),
-                        os.path.join(bot_path, 'bot_{}.lua'.format(hero.replace('npc_dota_hero_', ''))))
+            shutil.copy(
+                os.path.join(LUA_DIR, 'bot_controlled.lua.tpl'),
+                os.path.join(bot_path, f'bot_{hero.replace("npc_dota_hero_", "")}.lua'),
+            )
 
         # On Windows this needs an admin shell (or developer mode).
         os.symlink(src=bot_path, dst=self.dota_bot_path, target_is_directory=True)
-        logger.info('bots folder: %s -> %s', self.dota_bot_path, bot_path)
+        logger.info(f'bots folder: {self.dota_bot_path} -> {bot_path}')
         return bot_path
 
     def remove_bot_symlink(self):
@@ -140,9 +144,9 @@ class DotaGame:
     def stop_dota_pids():
         """Only one client can be active at a time, so kill anything left over."""
         if platform != 'win32':
-            os.system("pkill dota2")
+            os.system('pkill dota2')
         else:
-            os.system("taskkill /F /IM dota2.exe")
+            os.system('taskkill /F /IM dota2.exe')
 
     def _executable(self):
         if platform == 'win32':
@@ -155,10 +159,14 @@ class DotaGame:
             # NOTE: `_frames` and `_threaded` no longer appear in the 2026 server binary (see
             # docs/VERSION_DIFF.md). Unknown switches are ignored, so they stay for old builds.
             '-botworldstatesocket_threaded',
-            '-botworldstatetosocket_frames', str(self.ticks_per_observation),
-            '-botworldstatetosocket_radiant', str(self.PORT_WORLDSTATES[TEAM_RADIANT]),
-            '-botworldstatetosocket_dire', str(self.PORT_WORLDSTATES[TEAM_DIRE]),
-            '-con_logfile', self.console_log_path,
+            '-botworldstatetosocket_frames',
+            str(self.ticks_per_observation),
+            '-botworldstatetosocket_radiant',
+            str(self.PORT_WORLDSTATES[TEAM_RADIANT]),
+            '-botworldstatetosocket_dire',
+            str(self.PORT_WORLDSTATES[TEAM_DIRE]),
+            '-con_logfile',
+            self.console_log_path,
             '-con_timestamp',
             '-console',
             '-insecure',
@@ -166,13 +174,20 @@ class DotaGame:
             # Without it the engine kills the process once lua has blocked for 60 s (verified 2026-09,
             # see docs/VERSION_DIFF.md); a blocking lua is what a lockstep mode would rely on.
             '-nowatchdog',
-            '+clientport', '27006',  # Relates to steam client.
-            '+dota_surrender_on_disconnect', '0',
-            '+host_timescale', str(self.host_timescale),
-            '+hostname', 'dota2_env',
-            '+sv_cheats', '1',
-            '+sv_hibernate_when_empty', '0',
-            '+dota_1v1_skip_strategy', '1',
+            '+clientport',
+            '27006',  # Relates to steam client.
+            '+dota_surrender_on_disconnect',
+            '0',
+            '+host_timescale',
+            str(self.host_timescale),
+            '+hostname',
+            'dota2_env',
+            '+sv_cheats',
+            '1',
+            '+sv_hibernate_when_empty',
+            '0',
+            '+dota_1v1_skip_strategy',
+            '1',
         ]
         if self.host_mode == HOST_MODE_DEDICATED:
             args.append('-dedicated')

@@ -4,6 +4,7 @@ Every action dict carries a unique `extraData` string. When lua executes the act
     sync key: <extraData> <RealTime> ### <DotaTime> ### <step>
 to the console log, which lets us measure action latency and detect dropped actions.
 """
+
 import os
 import time
 
@@ -19,10 +20,10 @@ def monitor_log(console_log_path, pattern_queue, result_queue, max_wait=1.0):
     latest_lua_step = -1
     latest_lua_realtime = -1
 
-    with open(console_log_path, 'r', encoding="UTF-8", errors="replace") as f:
+    with open(console_log_path, encoding='UTF-8', errors='replace') as f:
         while True:
             request = pattern_queue.get()
-            pattern = request["pattern"]
+            pattern = request['pattern']
             during_game = 'dotatime' in request
             start_time = time.time()
 
@@ -44,19 +45,21 @@ def monitor_log(console_log_path, pattern_queue, result_queue, max_wait=1.0):
                     break
 
                 try:
-                    _, _, lua_realtime, lua_dotatime, lua_step = line.split("###")
+                    _, _, lua_realtime, lua_dotatime, lua_step = line.split('###')
                     lua_realtime, lua_dotatime, lua_step = float(lua_realtime), float(lua_dotatime), int(lua_step)
                 except ValueError:
                     result_queue.put({'reaction_time': 0, 'lua_realtime': 0, 'lua_step': 0, 'error_code': 1})
                     break
 
                 first = latest_lua_step == -1
-                result_queue.put({
-                    'reaction_time': int((lua_dotatime - request["dotatime"]) * 1000),
-                    'lua_realtime': 0 if first else int((lua_realtime - latest_lua_realtime) * 1000),
-                    'lua_step': 0 if first else lua_step - latest_lua_step,
-                    'error_code': 0,
-                })
+                result_queue.put(
+                    {
+                        'reaction_time': int((lua_dotatime - request['dotatime']) * 1000),
+                        'lua_realtime': 0 if first else int((lua_realtime - latest_lua_realtime) * 1000),
+                        'lua_step': 0 if first else lua_step - latest_lua_step,
+                        'error_code': 0,
+                    }
+                )
                 latest_lua_realtime = lua_realtime
                 latest_lua_step = lua_step
                 break

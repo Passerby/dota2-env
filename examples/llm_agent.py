@@ -6,6 +6,7 @@ The game does not pause while the model answers, so the hero keeps executing its
 meantime. `--ticks 30` (one observation per game second) keeps the number of requests reasonable.
 Each request is stateless apart from the last few (observation, action) pairs.
 """
+
 import argparse
 
 import anthropic
@@ -40,16 +41,19 @@ def main():
     args = parser.parse_args()
 
     client = anthropic.Anthropic()
-    env = TextWrapper(gym.make('dota2_env/Mid1v1-v0', render_mode='human' if args.render else None,
-                               ticks_per_observation=args.ticks))
+    env = TextWrapper(
+        gym.make('dota2_env/Mid1v1-v0', render_mode='human' if args.render else None, ticks_per_observation=args.ticks)
+    )
     history = []
     try:
         observation, info = env.reset()
         for step in range(args.steps):
             messages = []
-            for past_observation, past_action in history[-args.history:]:
-                messages += [{'role': 'user', 'content': past_observation},
-                             {'role': 'assistant', 'content': past_action}]
+            for past_observation, past_action in history[-args.history :]:
+                messages += [
+                    {'role': 'user', 'content': past_observation},
+                    {'role': 'assistant', 'content': past_action},
+                ]
             messages.append({'role': 'user', 'content': observation})
             response = client.messages.create(
                 model=args.model,
@@ -64,8 +68,11 @@ def main():
             history.append((observation, action))
 
             observation, reward, terminated, truncated, info = env.step(action.strip())
-            print('step {} t={:.0f} action={} reward={:+.2f} {}'.format(
-                step, info['dota_time'], action.strip(), reward, info['action_error'] or ''))
+            print(
+                'step {} t={:.0f} action={} reward={:+.2f} {}'.format(
+                    step, info['dota_time'], action.strip(), reward, info['action_error'] or ''
+                )
+            )
             if terminated or truncated:
                 print('episode over, winner:', info['winner'])
                 break

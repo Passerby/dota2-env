@@ -5,6 +5,7 @@
 Checks, in order: does the worldstate port open, do payloads parse with our proto (and are there
 unknown fields), does our lua load (console.log), and does a written action get acknowledged.
 """
+
 import argparse
 import collections
 import os
@@ -16,7 +17,7 @@ from google.protobuf.unknown_fields import UnknownFieldSet
 
 from dota2_env.bridge.constants import TEAM_RADIANT
 from dota2_env.bridge.game import DotaGame
-from dota2_env.bridge.worldstate import connect, read_raw_world_state, parse_world_state
+from dota2_env.bridge.worldstate import connect, parse_world_state, read_raw_world_state
 
 LOG_PATTERNS = re.compile(r'LUARDY|sync key|each step|\[ERROR\]|<ERROR>|\.lua|VScript|bots/|Decode|botworldstate', re.I)
 
@@ -56,30 +57,42 @@ def main():
                 dts.append(ws.dota_time - last_dota_time)
             last_dota_time = ws.dota_time
             if n <= 5 or n % 200 == 0:
-                with open(os.path.join(args.out, 'ws_{:05d}.bin'.format(n)), 'wb') as f:
+                with open(os.path.join(args.out, f'ws_{n:05d}.bin'), 'wb') as f:
                     f.write(raw)
                 unknown = sorted({fld.field_number for fld in UnknownFieldSet(ws)})
-                print('#{} bytes={} state={} dota_time={:.2f} units={} players={} unknown_fields={}'.format(
-                    n, len(raw), ws.game_state, ws.dota_time, len(ws.units), len(ws.players), unknown))
+                print(
+                    f'#{n} bytes={len(raw)} state={ws.game_state} dota_time={ws.dota_time:.2f} '
+                    f'units={len(ws.units)} players={len(ws.players)} unknown_fields={unknown}'
+                )
 
             heroes = [u for u in ws.units if u.unit_type == 1 and u.team_id == TEAM_RADIANT]
             if heroes and n % 5 == 0:
                 hero = heroes[0]
-                game.write_action(team_id=TEAM_RADIANT, data={
-                    'dotaTime': ws.dota_time,
-                    'extraData': '###probe_{}###'.format(n),
-                    'actions': [{'actionType': 'DOTA_UNIT_ORDER_MOVE_DIRECTLY', 'player': hero.player_id,
-                                 'moveDirectly': {'location': {'x': -600.0, 'y': -500.0, 'z': 0.0}}}],
-                })
+                game.write_action(
+                    team_id=TEAM_RADIANT,
+                    data={
+                        'dotaTime': ws.dota_time,
+                        'extraData': f'###probe_{n}###',
+                        'actions': [
+                            {
+                                'actionType': 'DOTA_UNIT_ORDER_MOVE_DIRECTLY',
+                                'player': hero.player_id,
+                                'moveDirectly': {'location': {'x': -600.0, 'y': -500.0, 'z': 0.0}},
+                            }
+                        ],
+                    },
+                )
 
         print('\n== summary ==')
         print('payloads:', n, 'game_state histogram:', dict(states))
         if sizes:
-            print('payload bytes min/avg/max: {}/{:.0f}/{}'.format(min(sizes), sum(sizes) / len(sizes), max(sizes)))
+            print(f'payload bytes min/avg/max: {min(sizes)}/{sum(sizes) / len(sizes):.0f}/{max(sizes)}')
         if dts:
             dts.sort()
-            print('dota_time delta between payloads, median: {:.4f}s (30 ticks/s => {:.1f} ticks)'.format(
-                dts[len(dts) // 2], dts[len(dts) // 2] * 30))
+            print(
+                f'dota_time delta between payloads, median: {dts[len(dts) // 2]:.4f}s '
+                f'(30 ticks/s => {dts[len(dts) // 2] * 30:.1f} ticks)'
+            )
         if hero is not None:
             print('radiant hero:', hero.name, 'player_id', hero.player_id, 'at', hero.location.x, hero.location.y)
     finally:
@@ -87,7 +100,7 @@ def main():
             shutil.copy(game.console_log_path, os.path.join(args.out, 'console.log'))
             with open(game.console_log_path, encoding='utf-8', errors='replace') as f:
                 hits = [line.rstrip() for line in f if LOG_PATTERNS.search(line)]
-            print('\n== console.log: {} interesting lines (first 40) =='.format(len(hits)))
+            print(f'\n== console.log: {len(hits)} interesting lines (first 40) ==')
             print('\n'.join(hits[:40]))
             print('sync key acks:', sum('sync key' in h for h in hits))
         else:

@@ -1,6 +1,12 @@
 """Reward functions and episode-end rules. Both are plain objects passed to the env, so they are easy to swap."""
+
+from typing import ClassVar
+
 from dota2_env.bridge.constants import (
-    TEAM_RADIANT, TEAM_DIRE, UNIT_TYPE_TOWER, DOTA_GAMERULES_STATE_POST_GAME,
+    DOTA_GAMERULES_STATE_POST_GAME,
+    TEAM_DIRE,
+    TEAM_RADIANT,
+    UNIT_TYPE_TOWER,
 )
 from dota2_env.observation import find_hero
 
@@ -12,7 +18,7 @@ def _player_stat(world_state, team_id, stat):
 
 
 def _mid_tower(world_state, team_id):
-    name = 'npc_dota_{}_tower1_mid'.format('goodguys' if team_id == TEAM_RADIANT else 'badguys')
+    name = f'npc_dota_{"goodguys" if team_id == TEAM_RADIANT else "badguys"}_tower1_mid'
     for unit in world_state.units:
         if unit.unit_type == UNIT_TYPE_TOWER and unit.name == name:
             return unit
@@ -26,15 +32,15 @@ def opposing(team_id):
 class LaningReward:
     """Dense 1v1 laning reward: weighted sum of per-step deltas. `components` ends up in `info["reward"]`."""
 
-    DEFAULT_WEIGHTS = {
+    DEFAULT_WEIGHTS: ClassVar[dict[str, float]] = {
         'last_hit': 0.16,
         'deny': 0.12,
         'xp_level': 0.3,
-        'health': 1.0,          # own health fraction gained/lost
-        'enemy_health': 0.8,    # enemy hero health fraction lost, only counted while the enemy stays visible
+        'health': 1.0,  # own health fraction gained/lost
+        'enemy_health': 0.8,  # enemy hero health fraction lost, only counted while the enemy stays visible
         'kill': 2.0,
         'death': -2.0,
-        'tower_health': 1.5,    # (enemy tower fraction lost) - (own tower fraction lost)
+        'tower_health': 1.5,  # (enemy tower fraction lost) - (own tower fraction lost)
         'win': 5.0,
     }
 
@@ -54,13 +60,15 @@ class LaningReward:
             components['deny'] = hero.denies - previous_hero.denies
             components['xp_level'] = hero.level - previous_hero.level
             if hero.is_alive and previous_hero.is_alive:
-                components['health'] = (hero.health / max(hero.health_max, 1)
-                                        - previous_hero.health / max(previous_hero.health_max, 1))
+                components['health'] = hero.health / max(hero.health_max, 1) - previous_hero.health / max(
+                    previous_hero.health_max, 1
+                )
 
         enemy, previous_enemy = find_hero(current, enemy_team), find_hero(previous, enemy_team)
         if enemy is not None and previous_enemy is not None and enemy.is_alive and previous_enemy.is_alive:
-            components['enemy_health'] = (previous_enemy.health / max(previous_enemy.health_max, 1)
-                                          - enemy.health / max(enemy.health_max, 1))
+            components['enemy_health'] = previous_enemy.health / max(previous_enemy.health_max, 1) - enemy.health / max(
+                enemy.health_max, 1
+            )
 
         components['kill'] = _player_stat(current, team, 'kills') - _player_stat(previous, team, 'kills')
         components['death'] = _player_stat(current, team, 'deaths') - _player_stat(previous, team, 'deaths')

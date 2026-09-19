@@ -1,11 +1,12 @@
 """Adapters between the dict-based env and what RL libraries / LLM agents usually want."""
+
 import json
 
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from dota2_env.actions import ActionType, N_MOVE_DIRECTIONS
+from dota2_env.actions import N_MOVE_DIRECTIONS, ActionType
 from dota2_env.observation import MAX_UNITS, N_ABILITIES
 from dota2_env.text import describe
 
@@ -67,18 +68,25 @@ class TextWrapper(gym.Wrapper):
         try:
             data = json.loads(action) if isinstance(action, str) else dict(action)
             action_type = ActionType[str(data['type']).upper()]
-            parsed = dict(noop, type=int(action_type), move=int(data.get('move', 0)) % N_MOVE_DIRECTIONS,
-                          target=int(data.get('target', 0)), ability=int(data.get('ability', 0)))
+            parsed = dict(
+                noop,
+                type=int(action_type),
+                move=int(data.get('move', 0)) % N_MOVE_DIRECTIONS,
+                target=int(data.get('target', 0)),
+                ability=int(data.get('ability', 0)),
+            )
         except (ValueError, KeyError, TypeError) as e:
-            return noop, 'cannot parse action: {!r}'.format(e)
+            return noop, f'cannot parse action: {e!r}'
 
         if not mask['type'][action_type]:
-            return noop, '{} is not legal right now'.format(action_type.name)
+            return noop, f'{action_type.name} is not legal right now'
         if action_type in (ActionType.CAST, ActionType.CAST_TARGET) and not (
-                0 <= parsed['ability'] < N_ABILITIES and mask['ability'][parsed['ability']]):
-            return noop, 'ability {} is not castable'.format(parsed['ability'])
+            0 <= parsed['ability'] < N_ABILITIES and mask['ability'][parsed['ability']]
+        ):
+            return noop, f'ability {parsed["ability"]} is not castable'
         target_mask = {ActionType.ATTACK: mask['attack_target'], ActionType.CAST_TARGET: mask['cast_target']}
         if action_type in target_mask and not (
-                0 <= parsed['target'] < MAX_UNITS and target_mask[action_type][parsed['target']]):
-            return noop, 'target {} is not valid for {}'.format(parsed['target'], action_type.name)
+            0 <= parsed['target'] < MAX_UNITS and target_mask[action_type][parsed['target']]
+        ):
+            return noop, f'target {parsed["target"]} is not valid for {action_type.name}'
         return parsed, None

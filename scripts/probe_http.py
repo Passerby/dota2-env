@@ -9,6 +9,7 @@ work, what the response table holds, what a localhost round trip costs (wall ms 
 how large a body may be, and whether a callback can be delivered while lua blocks, which is what
 lock-step would need. The findings are written up in docs/IPC_CHANNELS.md.
 """
+
 import argparse
 import json
 import os
@@ -227,17 +228,22 @@ function Think()
 end
 """
 
+
 class ProbeHandler(BaseHTTPRequestHandler):
     requests: ClassVar[list[dict[str, object]]] = []
 
     def do_POST(self) -> None:
         body = self.rfile.read(int(self.headers.get('Content-Length') or 0))
-        ProbeHandler.requests.append({
-            'path': self.path, 'method': self.command, 'body_bytes': len(body),
-            'content_type': self.headers.get('Content-Type'),
-            'user_agent': self.headers.get('User-Agent'),
-            'host': self.headers.get('Host'),
-        })
+        ProbeHandler.requests.append(
+            {
+                'path': self.path,
+                'method': self.command,
+                'body_bytes': len(body),
+                'content_type': self.headers.get('Content-Type'),
+                'user_agent': self.headers.get('User-Agent'),
+                'host': self.headers.get('Host'),
+            }
+        )
         # lua asks for a response of a given size with ?resp=N, to find the download limit
         padding = int(self.path.split('resp=')[1].split('&')[0]) if 'resp=' in self.path else 0
         payload = json.dumps({'got': len(body)}).encode()
@@ -304,8 +310,10 @@ def main() -> None:
         if round_trips:
             wall = f'{round_trips[0]}/{round_trips[len(round_trips) // 2]}/{round_trips[-1]}'
             think = f'{ticks[0]}/{ticks[len(ticks) // 2]}/{ticks[-1]}'
-            print(f'localhost round trips: n={len(round_trips)} wall ms min/median/max={wall} '
-                  f'think ticks {think}', flush=True)
+            print(
+                f'localhost round trips: n={len(round_trips)} wall ms min/median/max={wall} think ticks {think}',
+                flush=True,
+            )
         print(f'server saw {len(ProbeHandler.requests)} requests', flush=True)
         for request in ProbeHandler.requests[:3]:
             print(f'   {json.dumps(request)}', flush=True)

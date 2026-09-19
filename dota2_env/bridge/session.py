@@ -1,4 +1,5 @@
 """One running Dota match seen from one team: launch, observe, act, close."""
+
 import itertools
 import json
 import os
@@ -7,9 +8,9 @@ import re
 import shutil
 from multiprocessing import Process, Queue
 
-from dota2_env.bridge.constants import TEAM_RADIANT, TEAM_DIRE
+from dota2_env.bridge.constants import TEAM_DIRE, TEAM_RADIANT
 from dota2_env.bridge.game import DotaGame
-from dota2_env.bridge.worldstate import worldstate_listener, parse_world_state
+from dota2_env.bridge.worldstate import parse_world_state, worldstate_listener
 
 RE_LUARDY = re.compile(r'LUARDY\s+(\{.*\})')
 RE_ACK = re.compile(r'ACK\s+(\{.*\})')
@@ -27,9 +28,9 @@ class ActionDelivery:
 
     def __init__(self):
         self.counts = {'sent': 0, 'executed': 0, 'lost': 0}
-        self.delays = []          # game seconds, executed actions only
-        self.last = None          # (action id, status, delay) of the newest ack
-        self._pending = {}        # action id -> extra_actions
+        self.delays = []  # game seconds, executed actions only
+        self.last = None  # (action id, status, delay) of the newest ack
+        self._pending = {}  # action id -> extra_actions
         self.lost_extra_actions = []  # extras of lost actions, for the caller to send again
 
     def sent(self, action_id, extra_actions):
@@ -74,8 +75,9 @@ class DotaSession:
     def start(self):
         self.game.run_dota()
         self._queue = Queue()
-        self._listener = Process(target=worldstate_listener,
-                                 args=(self.game.PORT_WORLDSTATES[self.team_id], self._queue), daemon=True)
+        self._listener = Process(
+            target=worldstate_listener, args=(self.game.PORT_WORLDSTATES[self.team_id], self._queue), daemon=True
+        )
         self._listener.start()
 
     def observe(self, timeout):
@@ -99,7 +101,7 @@ class DotaSession:
         data = {
             # lua ignores a file whose dotaTime it has already executed
             'dotaTime': dota_time,
-            'extraData': '###{}###'.format(action_id),
+            'extraData': f'###{action_id}###',
             'actions': list(actions),
         }
         if extra_actions:

@@ -1,21 +1,26 @@
 """Gymnasium environment: 1v1 mid lane, one agent-controlled hero."""
+
 import logging
 import queue
 import time
+from typing import ClassVar
 
 import gymnasium as gym
 
-from dota2_env import actions as A
+from dota2_env import actions
 from dota2_env.bridge.constants import (
-    TEAM_RADIANT, DOTA_GAMEMODE_1V1MID, HOST_MODE_DEDICATED, HOST_MODE_GUI,
+    DOTA_GAMEMODE_1V1MID,
+    HOST_MODE_DEDICATED,
+    HOST_MODE_GUI,
+    TEAM_RADIANT,
 )
-from dota2_env.bridge.game import DEFAULT_HERO, CONTROL_AGENT
+from dota2_env.bridge.game import CONTROL_AGENT, DEFAULT_HERO
 from dota2_env.bridge.session import DotaSession
-from dota2_env.observation import observation_space, build_observation, find_hero
+from dota2_env.observation import build_observation, find_hero, observation_space
 from dota2_env.rewards import LaningReward, Mid1v1Rules, opposing
 from dota2_env.text import describe
 
-logger = logging.getLogger("dota2_env")
+logger = logging.getLogger('dota2_env')
 
 DEFAULT_STARTING_ITEMS = ('item_tango', 'item_faerie_fire', 'item_branches', 'item_branches', 'item_circlet')
 # Ability slots tried in order whenever there is a skill point; lua skips the ones that cannot be
@@ -34,7 +39,7 @@ class DotaMid1v1Env(gym.Env):
     so `reset(seed=...)` only seeds `self.np_random`.
     """
 
-    metadata = {'render_modes': ['human', 'ansi']}
+    metadata: ClassVar[dict[str, list[str]]] = {'render_modes': ['human', 'ansi']}
 
     def __init__(
         self,
@@ -67,7 +72,7 @@ class DotaMid1v1Env(gym.Env):
         assert render_mode is None or render_mode in self.metadata['render_modes']
         self.render_mode = render_mode
         self.observation_space = observation_space
-        self.action_space = A.action_space
+        self.action_space = actions.action_space
 
         self.team_id = team_id
         self.step_timeout = step_timeout
@@ -76,17 +81,17 @@ class DotaMid1v1Env(gym.Env):
         self.starting_items = tuple(starting_items)
         self.ability_priority = tuple(ability_priority)
         self._session_factory = session_factory
-        self._session_kwargs = dict(
-            team_id=team_id,
-            keep_files=keep_files,
-            host_timescale=timescale,
-            ticks_per_observation=ticks_per_observation,
-            game_mode=DOTA_GAMEMODE_1V1MID,
-            host_mode=HOST_MODE_GUI if render_mode == 'human' else HOST_MODE_DEDICATED,
-            dota_path=dota_path,
-            heroes={team_id: hero, opposing(team_id): opponent_hero},
-            control={team_id: CONTROL_AGENT, opposing(team_id): opponent},
-        )
+        self._session_kwargs = {
+            'team_id': team_id,
+            'keep_files': keep_files,
+            'host_timescale': timescale,
+            'ticks_per_observation': ticks_per_observation,
+            'game_mode': DOTA_GAMEMODE_1V1MID,
+            'host_mode': HOST_MODE_GUI if render_mode == 'human' else HOST_MODE_DEDICATED,
+            'dota_path': dota_path,
+            'heroes': {team_id: hero, opposing(team_id): opponent_hero},
+            'control': {team_id: CONTROL_AGENT, opposing(team_id): opponent},
+        }
         self._session = None
         self._world_state = None
         self._observation = None
@@ -112,7 +117,7 @@ class DotaMid1v1Env(gym.Env):
                 break
         self._player_id = hero.player_id
         self._ability_names = {}
-        self._pending_extra_actions = [A.purchase_item(self._player_id, item) for item in self.starting_items]
+        self._pending_extra_actions = [actions.purchase_item(self._player_id, item) for item in self.starting_items]
         self.reward_fn.reset(world_state, self.team_id)
         self.rules.reset(world_state, self.team_id)
         self.rules(world_state)
@@ -121,7 +126,7 @@ class DotaMid1v1Env(gym.Env):
 
     def step(self, action):
         assert self._session is not None, 'call reset() first'
-        bridge_action = A.to_bridge_action(action, self._observation, self._player_id)
+        bridge_action = actions.to_bridge_action(action, self._observation, self._player_id)
         if bridge_action is None:
             bridge_action = {'actionType': 'DOTA_UNIT_ORDER_NONE', 'player': self._player_id}
 
@@ -132,8 +137,7 @@ class DotaMid1v1Env(gym.Env):
         delivery.lost_extra_actions = []
         hero = self._observation.hero
         if hero is not None and hero.ability_points > 0:
-            extra_actions += [A.train_ability(self._player_id, 'slot:{}'.format(slot))
-                              for slot in self.ability_priority]
+            extra_actions += [actions.train_ability(self._player_id, f'slot:{slot}') for slot in self.ability_priority]
         self._session.act(self._world_state.dota_time, [bridge_action], extra_actions)
 
         previous = self._world_state
@@ -160,7 +164,7 @@ class DotaMid1v1Env(gym.Env):
         info = self._info()
         info['winner'] = winner
         if winner is None:
-            logger.warning('no world state for %.0fs, truncating the episode', self.step_timeout)
+            logger.warning(f'no world state for {self.step_timeout:.0f}s, truncating the episode')
             info.update(reward=dict.fromkeys(self.reward_fn.weights, 0.0), error='worldstate feed ended')
             return self._observation.arrays, 0.0, False, True, info
         reward, info['reward'] = self.reward_fn(self._world_state, self._world_state, winner)
@@ -180,11 +184,11 @@ class DotaMid1v1Env(gym.Env):
 
     def queue_purchase(self, item_name):
         """Buy `item_name` (e.g. "item_boots") with the next step."""
-        self._pending_extra_actions.append(A.purchase_item(self._player_id, item_name))
+        self._pending_extra_actions.append(actions.purchase_item(self._player_id, item_name))
 
     def queue_train_ability(self, ability):
         """Level an ability with the next step; `ability` is a name or "slot:N"."""
-        self._pending_extra_actions.append(A.train_ability(self._player_id, ability))
+        self._pending_extra_actions.append(actions.train_ability(self._player_id, ability))
 
     def ability_names(self):
         """{slot: ability name} of our hero as reported by the running client (empty until lua has started)."""
@@ -194,10 +198,10 @@ class DotaMid1v1Env(gym.Env):
         return self._ability_names
 
     def action_masks(self):
-        return A.build_action_mask(self._observation, self.team_id)
+        return actions.build_action_mask(self._observation, self.team_id)
 
     def sample_legal_action(self):
-        return A.sample_masked_action(self.action_masks(), self.np_random)
+        return actions.sample_masked_action(self.action_masks(), self.np_random)
 
     def _set_state(self, world_state):
         self._world_state = world_state

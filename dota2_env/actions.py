@@ -1,4 +1,5 @@
 """Discrete hero action space, its legality masks, and the translation to bridge action dicts."""
+
 import math
 from enum import IntEnum
 
@@ -15,26 +16,30 @@ DENY_HEALTH_FRACTION = 0.5
 
 class ActionType(IntEnum):
     NOOP = 0
-    MOVE = 1         # uses `move`: direction index, 0 = east, counter-clockwise
-    ATTACK = 2       # uses `target`: row of the observation's unit table
-    CAST = 3         # uses `ability`: no-target cast of that ability slot
+    MOVE = 1  # uses `move`: direction index, 0 = east, counter-clockwise
+    ATTACK = 2  # uses `target`: row of the observation's unit table
+    CAST = 3  # uses `ability`: no-target cast of that ability slot
     CAST_TARGET = 4  # uses `ability` and `target`
     STOP = 5
 
 
-action_space = spaces.Dict({
-    'type': spaces.Discrete(len(ActionType)),
-    'move': spaces.Discrete(N_MOVE_DIRECTIONS),
-    'target': spaces.Discrete(MAX_UNITS),
-    'ability': spaces.Discrete(N_ABILITIES),
-})
+action_space = spaces.Dict(
+    {
+        'type': spaces.Discrete(len(ActionType)),
+        'move': spaces.Discrete(N_MOVE_DIRECTIONS),
+        'target': spaces.Discrete(MAX_UNITS),
+        'ability': spaces.Discrete(N_ABILITIES),
+    }
+)
 
-action_mask_space = spaces.Dict({
-    'type': spaces.MultiBinary(len(ActionType)),
-    'attack_target': spaces.MultiBinary(MAX_UNITS),
-    'cast_target': spaces.MultiBinary(MAX_UNITS),
-    'ability': spaces.MultiBinary(N_ABILITIES),
-})
+action_mask_space = spaces.Dict(
+    {
+        'type': spaces.MultiBinary(len(ActionType)),
+        'attack_target': spaces.MultiBinary(MAX_UNITS),
+        'cast_target': spaces.MultiBinary(MAX_UNITS),
+        'ability': spaces.MultiBinary(N_ABILITIES),
+    }
+)
 
 
 def build_action_mask(observation, team_id):
@@ -69,6 +74,7 @@ def build_action_mask(observation, team_id):
 
 def sample_masked_action(mask, rng):
     """Uniformly random legal action; handy for smoke tests and as a baseline."""
+
     def pick(bits):
         legal = np.flatnonzero(bits)
         return int(rng.choice(legal)) if len(legal) else 0
@@ -96,21 +102,36 @@ def to_bridge_action(action, observation, player):
         return {'actionType': 'DOTA_UNIT_ORDER_STOP', 'player': player}
     if action_type == ActionType.MOVE:
         angle = 2 * math.pi * int(action['move']) / N_MOVE_DIRECTIONS
-        return {'actionType': 'DOTA_UNIT_ORDER_MOVE_DIRECTLY', 'player': player, 'moveDirectly': {'location': {
-            'x': observation.origin[0] + MOVE_DISTANCE * math.cos(angle),
-            'y': observation.origin[1] + MOVE_DISTANCE * math.sin(angle),
-            'z': 0.0,
-        }}}
+        return {
+            'actionType': 'DOTA_UNIT_ORDER_MOVE_DIRECTLY',
+            'player': player,
+            'moveDirectly': {
+                'location': {
+                    'x': observation.origin[0] + MOVE_DISTANCE * math.cos(angle),
+                    'y': observation.origin[1] + MOVE_DISTANCE * math.sin(angle),
+                    'z': 0.0,
+                }
+            },
+        }
     if action_type == ActionType.CAST:
-        return {'actionType': 'DOTA_UNIT_ORDER_CAST_NO_TARGET', 'player': player,
-                'cast': {'abilitySlot': int(action['ability'])}}
+        return {
+            'actionType': 'DOTA_UNIT_ORDER_CAST_NO_TARGET',
+            'player': player,
+            'cast': {'abilitySlot': int(action['ability'])},
+        }
     if target_handle is None:
         return None
     if action_type == ActionType.ATTACK:
-        return {'actionType': 'DOTA_UNIT_ORDER_ATTACK_TARGET', 'player': player,
-                'attackTarget': {'target': target_handle, 'once': True}}
-    return {'actionType': 'DOTA_UNIT_ORDER_CAST_TARGET', 'player': player,
-            'castTarget': {'abilitySlot': int(action['ability']), 'target': target_handle}}
+        return {
+            'actionType': 'DOTA_UNIT_ORDER_ATTACK_TARGET',
+            'player': player,
+            'attackTarget': {'target': target_handle, 'once': True},
+        }
+    return {
+        'actionType': 'DOTA_UNIT_ORDER_CAST_TARGET',
+        'player': player,
+        'castTarget': {'abilitySlot': int(action['ability']), 'target': target_handle},
+    }
 
 
 def train_ability(player, ability):
