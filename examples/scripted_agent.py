@@ -51,7 +51,7 @@ def policy(observation, mask, team_id):
             for slot, raze_range in enumerate(RAZE_RANGES):
                 if (
                     mask['type'][ActionType.CAST]
-                    and mask['ability'][slot]
+                    and mask['ability'][ActionType.CAST][slot]
                     and sideways < 120
                     and abs(forward - raze_range) < RAZE_RADIUS - 100
                 ):
@@ -80,6 +80,9 @@ def main():
     parser.add_argument('--opponent', default='builtin', choices=['builtin', 'idle'])
     parser.add_argument('--render', action='store_true')
     parser.add_argument('--team', default='radiant', choices=['radiant', 'dire'])
+    parser.add_argument(
+        '--replay', nargs='?', const='replays', metavar='DIR', help='record the match into DIR (default: replays/)'
+    )
     args = parser.parse_args()
 
     env = gym.make(
@@ -88,6 +91,7 @@ def main():
         timescale=args.timescale,
         opponent=args.opponent,
         team_id=dota2_env.TEAM_RADIANT if args.team == 'radiant' else dota2_env.TEAM_DIRE,
+        replay_dir=args.replay,
     )
     team_id = env.unwrapped.team_id
     try:
@@ -109,6 +113,8 @@ def main():
         print('reward components (unweighted sums):', {k: round(v, 2) for k, v in totals.items()})
     finally:
         env.close()
+        if env.unwrapped.replay_path is not None:
+            print(f'replay: {env.unwrapped.replay_path}')
 
 
 if __name__ == '__main__':

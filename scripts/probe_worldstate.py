@@ -107,7 +107,7 @@ def main():
             print('no console.log at', game.console_log_path)
         if not args.keep_running:
             game.stop_dota_pids()
-            game.remove_bot_symlink()
+            game.remove_dota_files()
 
 
 if __name__ == '__main__':

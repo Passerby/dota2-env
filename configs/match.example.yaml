@@ -1,0 +1,85 @@
+# One LLM match. Copy this file, fill in the model ids and keys, and run:
+#   python examples/llm_match.py --config configs/my_match.yaml --dry-run
+#
+# ${VAR} is replaced with that environment variable; examples/llm_match.py first loads .env from the
+# repo root, so the usual place for keys is there (cp .env.example .env). A literal key works too, which
+# is why configs/*.yaml is gitignored and only this example is tracked - do not put a real key in this file.
+#
+# Every gateway must speak the OpenAI chat API: POST {base_url}/chat/completions.
+# Check base_url and model against your provider's own docs; the ones below are placeholders.
+
+gateways:
+  deepseek:
+    base_url: https://api.deepseek.com/v1
+    api_key: ${DEEPSEEK_API_KEY}
+    model: FILL_ME              # e.g. the cheap chat model, not the reasoner, for 1 Hz play
+    price_per_mtok: {input: 0.0, output: 0.0}   # USD per million tokens, only used for the cost report
+    timeout_seconds: 8.0
+    params: {temperature: 0.3, max_tokens: 200}
+
+  openrouter:
+    base_url: https://openrouter.ai/api/v1
+    api_key: ${OPENROUTER_API_KEY}
+    model: FILL_ME              # one key, every vendor: the easiest way to make two teams differ
+    price_per_mtok: {input: 0.0, output: 0.0}
+    timeout_seconds: 10.0
+    params: {temperature: 0.3, max_tokens: 200}
+
+  dashscope:
+    base_url: FILL_ME           # the OpenAI-compatible endpoint of your provider (Qwen / Kimi / Zhipu)
+    api_key: ${DASHSCOPE_API_KEY}
+    model: FILL_ME
+    price_per_mtok: {input: 0.0, output: 0.0}
+    timeout_seconds: 10.0
+    # Turning thinking off has no standard switch - put your provider's own here, or per agent below.
+    params: {temperature: 0.3, max_tokens: 200, enable_thinking: false}
+
+  local:
+    base_url: http://localhost:11434/v1   # Ollama; vLLM usually serves http://localhost:8000/v1
+    api_key: not-needed
+    model: FILL_ME
+    price_per_mtok: {input: 0.0, output: 0.0}   # free, so the cost report stays at zero
+    timeout_seconds: 20.0
+    params: {temperature: 0.3, max_tokens: 200}
+
+match:
+  mode: allpick5v5          # allpick5v5 | mid1v1 (1v1 is the cheap way to smoke-test the whole chain)
+  timescale: 4.0            # 4x is stable headless, but leaves the models less wall clock per game second
+  ticks_per_observation: 6  # 30 ticks = 1 game second, so 6 = 5 frames per second
+  max_dota_time: 600.0      # short debug match; a full 5v5 is 2400
+  spend_limit_usd: 2.0      # reaching it ends the match at once
+  log_dir: logs             # one <UTC timestamp>.jsonl per match: every request, reply, cost and latency
+  all_chat: true            # agents may add "say" to taunt. Write-only: the world state carries no chat,
+                            # so nobody can read or answer it, least of all the builtin bots
+  share_team_state: true    # one line per teammate in every prompt; costs about 70 tokens a turn
+  render: false             # true opens the game window
+
+# agents[i] drives observation row i, which is info["player_ids"][i], which is the team's i-th player
+# id ascending. The order here IS that mapping - reordering it reassigns heroes.
+# decision_interval is in GAME seconds: 0.2 = every frame at 5 Hz, 1.0 = once a second, 3.0 = every 3s.
+# It is an upper bound; a model slower than its interval simply decides less often and the hero holds
+# its last order in between.
+radiant:
+  control: agent            # agent | builtin | idle
+  agents:
+    - {nickname: Shadow, hero: npc_dota_hero_nevermore,      position: mid,          gateway: deepseek, decision_interval: 1.0}
+    - {nickname: Bullet, hero: npc_dota_hero_sniper,         position: safe,         gateway: deepseek, decision_interval: 1.0}
+    - {nickname: Blaze,  hero: npc_dota_hero_lina,           position: offlane,      gateway: deepseek, decision_interval: 3.0}
+    - {nickname: Hex,    hero: npc_dota_hero_lion,           position: support,      gateway: deepseek, decision_interval: 3.0}
+    - {nickname: Frost,  hero: npc_dota_hero_crystal_maiden, position: hard_support, gateway: deepseek, decision_interval: 3.0}
+      # per-agent params override the gateway's, e.g. {params: {reasoning_effort: none}}
+
+# Phase 1: the client plays this side. Phase 2 (both teams LLM) is control: agent plus five agents here.
+# All Pick will not hand the same hero to both teams, so all ten names must differ.
+dire:
+  control: builtin
+  heroes:
+    - npc_dota_hero_axe
+    - npc_dota_hero_juggernaut
+    - npc_dota_hero_zuus
+    - npc_dota_hero_witch_doctor
+    - npc_dota_hero_skywrath_mage
+
+# Note: positions are safe | mid | offlane | support | hard_support, i.e. positions 1-5, named after the
+# client's Safe Lane / Mid Lane / Off Lane / Support / Hard Support. "offlane" is spelled out because a bare
+# `off` is boolean false in YAML, which would silently reject the config.

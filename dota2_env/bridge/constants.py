@@ -7,6 +7,7 @@ have to compile the (large, frequently changing) shared enums proto.
 TEAM_RADIANT = 2
 TEAM_DIRE = 3
 
+DOTA_GAMEMODE_AP = 1
 DOTA_GAMEMODE_1V1MID = 21
 
 DOTA_GAMERULES_STATE_INIT = 0

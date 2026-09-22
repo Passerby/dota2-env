@@ -58,9 +58,9 @@ def build_observation(world_state, team_id):
 - Layering is a hard rule: `dota2_env/bridge/` talks to Dota and must not import gymnasium or numpy.
   Everything above it goes through `DotaSession` (start / observe / act / lua_status / match_winner /
   close). `tests/fake_session.py` mirrors that interface — change both together.
-- Observation feature order lives in the `*_FEATURES` tuples in `observation.py`. Row `i` of the unit
-  table is action `target = i` and text row `[i]`. Touching either changes the spaces: update the
-  tests and the README tables in the same change.
+- Observation feature order lives in the `*_FEATURES` tuples in `observation.py` (the map part in
+  `map_features.py`). Row `i` of the unit table is action `target = i` and text row `[i]`. Touching
+  either changes the spaces: update the tests and the README tables in the same change.
 - Every action file needs a main action for the controlled player (`NONE` for a no-op), otherwise Lua
   re-runs `extra_actions` every tick.
 

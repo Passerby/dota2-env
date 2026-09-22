@@ -2,6 +2,7 @@ local config = require('bots/config')
 local dkjson = require('game/dkjson')
 local pprint = require('bots/pprint')
 local action_proc = require('bots/action_processor')
+local behavior = require('bots/behavior')
 
 
 local ACTION_FILENAME = 'bots/actions_t' .. GetTeam()
@@ -50,6 +51,8 @@ local function act(action)
         tblActions[action.actionType] = {{action.chat.message}, {action.chat.toAllchat}}
     elseif action.actionType == "DOTA_UNIT_ORDER_CAST_POSITION" then
         tblActions[action.actionType] = {{action.castLocation.abilitySlot}, {action.castLocation.location.x, action.castLocation.location.y, action.castLocation.location.z}, {0}}
+    elseif action.actionType == "DOTA_UNIT_ORDER_CAST_VECTOR" then
+        tblActions[action.actionType] = {{action.castVector.abilitySlot}, {action.castVector.location.x, action.castVector.location.y, action.castVector.location.z}, {action.castVector.direction.x, action.castVector.direction.y}}
     elseif action.actionType == "DOTA_UNIT_ORDER_CAST_TARGET" then
         tblActions[action.actionType] = {{action.castTarget.abilitySlot}, {action.castTarget.target}, {0}}
     elseif action.actionType == "DOTA_UNIT_ORDER_CAST_TARGET_TREE" then
@@ -155,6 +158,30 @@ local act_at_step = nil
 
 local latest_action_time = nil
 
+-- The world state carries neither the names of items nor what a skill or item can be aimed at, so print
+-- both whenever they change. Indices are python's ability action: skills 0-5, then inventory slots 6-11.
+local reported_slots = nil
+local function report_slots()
+    local slots = {}
+    local signature = ''
+    local function add(index, hAbility)
+        if hAbility == nil then
+            return
+        end
+        local kinds = behavior.Kinds(hAbility)
+        slots[tostring(index)] = {name = hAbility:GetName(), kinds = kinds}
+        signature = signature .. index .. '=' .. hAbility:GetName() .. ':' .. table.concat(kinds, ',') .. ';'
+    end
+    for slot = 0, 5 do
+        add(slot, GetBot():GetAbilityInSlot(slot))
+        add(slot + 6, GetBot():GetItemInSlot(slot))
+    end
+    if signature ~= reported_slots then
+        reported_slots = signature
+        print('SLOTS', dkjson.encode({team = GetTeam(), player_id = GetBot():GetPlayerID(), slots = slots}))
+    end
+end
+
 local function AgentThink()
     step = step + 1
     action = nil
@@ -183,6 +210,7 @@ local function AgentThink()
         end
         print('LUARDY', dkjson.encode(status))
     end
+    report_slots()
 
     action, new_time = get_new_action(dota_time, GetBot():GetPlayerID(), latest_action_time, step)
 

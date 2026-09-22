@@ -1,7 +1,8 @@
 # 新旧版本差异（Last Order 时代 7.23/7.24 → 2026-09 客户端）
 
 实测环境：macOS，Dota 2 build 25329722（`steam.inf`: ClientVersion 6933，2026-09-15），
-`scripts/probe_worldstate.py`，GUI 与 `-dedicated` 两种模式各跑一局 1v1 中路。
+`scripts/probe_worldstate.py`，GUI 与 `-dedicated` 两种模式各跑一局 1v1 中路；5v5 全阵营用
+`examples/scripted_5v5.py` 在 `-dedicated` 下跑（见第 1.1 节）。
 标 ✅ 的是实测确认，标 ⚠️ 的是从静态分析推断、还需要进一步验证。
 
 ## 结论
@@ -21,16 +22,103 @@
 | 包格式 | 4 字节小端长度 + protobuf | 不变；每帧仍是**全量**状态（约 45KB / 100+ 单位），不是增量 | ✅ |
 | `-dedicated` 无 GUI | 可用 | macOS 上可用，地图加载约 3s（GUI 约 11s） | ✅ |
 | `-fill_with_bots +map start gamemode 21` | 自动开 1v1 中路 | 不变，-90s 开始 PRE_GAME | ✅ |
+| `-fill_with_bots +map start gamemode 1` | — | 全阵营 5v5 同样自动开局，见 1.1 | ✅ |
 | `game/dkjson`、`loadfile`、`DebugDraw*`、`Action_MoveDirectly` | 可用 | 可用（动作回执 254/254） | ✅ |
 | 新增脚本入口 | — | 引擎会尝试加载 `bots/team_desires.lua`（找不到只打一行日志） | ✅ |
 | 默认 bot 买装备 | 未核实 | **默认 AI 会自己买鞋/吃树**；已在 `item_purchase_generic.lua` 里用空 `ItemPurchaseThink` 屏蔽 | ✅ |
 | 内置 bot AI 作为对手 | — | bot 脚本不定义 `Think()` 时由 Valve 默认 AI 接管，1v1 中路里会补刀、对线、击杀 | ✅ |
 | `host_timescale` 加速 | 可用 | `-dedicated` 下 2×、4× 实测稳定（6 tick/步 → 20 step/s） | ✅ |
 | 1v1 结束 | — | 任一方第 2 次死亡（含被塔杀）即原生结束：摧毁败方基地 → POST_GAME → **立刻停止推送 worldstate**，服务器随后退出；胜负只能从 console.log 的 `Building: npc_dota_*_fort destroyed` 读到 | ✅ |
-| **复活后的英雄不上报** | 正常 | 英雄复活后只要还站在泉水没动，就**不出现在己方 worldstate 的 `units` 里**（`players[].is_alive` 为 true）；发一条移动指令后恢复。Lua 端一直正常 | ✅ |
+| **复活后的英雄不上报** | 正常 | 英雄复活后只要还站在泉水没动，就**不出现在己方 worldstate 的 `units` 里**（`players[].is_alive` 为 true）；发一条移动指令后恢复。Lua 端一直正常。环境在这种状态下把 `MOVE` 以外的动作（包括 `NOOP`）换成朝地图中心走一步（`actions.to_bridge_action`）：2026-09 的 LLM 5v5 里模型看到 `hero not spawned` 就一直回 NOOP，4 个英雄复活后在泉水里站到了比赛结束。实测 1v1 被塔杀后只发 NOOP：复活后 1 帧就重新上报，之后站着不动也不再消失 | ✅ |
 | 每个端口的连接数 | — | 同一 worldstate 端口只接受一个客户端 | ✅ |
 | Lua 阻塞与 `-nowatchdog` | dotaservice 原版靠 Lua 死循环等动作文件实现锁步 | Lua `Think()` 里循环 `loadfile` 阻塞时**整个游戏冻结**（游戏时间不走、worldstate 停发），解除后无损恢复。不带 `-nowatchdog`：阻塞满 **60 秒**进程被杀（`FATAL ERROR: Watchdog timeout exceeded in Lua script code`）；带 `-nowatchdog`：阻塞 90 秒仍存活并恢复。该参数字符串在二进制里搜不到但确实有效 | ✅ |
-| GUI 模式看画面 | 控制台 `jointeam spec` | 同 | ⚠️ 未重新验证 |
+| GUI 模式看画面 | 控制台 `jointeam spec` | 服务器 VM 自动发（1.3） | ✅ |
+
+## 1.1 5v5 全阵营（新增，2026-09 实测）
+
+`gamemode 1` + `-dedicated`，天辉 5 个英雄全部由 Python 驱动（`examples/scripted_5v5.py`），夜魇是内置 AI，
+`timescale 4` / `ticks_per_observation 6`。跑完整一局：8467 步 / 26 分 43 秒游戏时间，内置 AI 推掉天辉基地结束。
+
+| 项目 | 结果 | 状态 |
+|---|---|---|
+| 选英雄 | `hero_selection.lua` 里 `SelectHero(ids[i], heroes[i])` 对每队 5 个位置都生效，实测拿到配置的影魔 / 火枪 / 莉娜 / 莱恩 / 冰女 | ✅ |
+| player id | 天辉 0-4、夜魇 5-9；`GetTeamPlayers()` 的数组顺序 == player id 升序，所以「配置里的第 i 个英雄 = 第 i 个 player id」成立（5 条 LUARDY 的 `player_id` 与英雄一一对应） | ✅ |
+| 一个文件驱动 5 个英雄 | 5 个 bot 都 `loadfile` 同一个 `actions_t2.lua`，各自执行 `player` 等于自己的那条主动作；一个文件产生 5 条 ACK（Python 只认第一条，其余自然丢弃） | ✅ |
+| 动作送达 | 整局 8467 个文件 → 8466 executed / **0 lost** / 1 pending，跳帧 0，延迟中位数 0.100 游戏秒（和 1v1 相同的下限） | ✅ |
+| 吞吐 | 20.0 step/s（= `timescale 4` ÷ 0.2 游戏秒每步）全程不掉，**和 1v1 一样**，5 个英雄没有带来额外开销 | ✅ |
+| 结束方式 | 和 1v1 一样：基地被破的瞬间客户端就停止推送 worldstate——最后一帧基地还剩 1% 血（`ancient` 分量累计只到 -0.99，没有出现血量为 0 的那一帧），所以胜负是 `match_winner()` 从 console.log 的 `Building: npc_dota_goodguys_fort destroyed` 读出来的 → `terminated=True, winner=夜魇` | ✅ |
+| LUARDY | 每个受控英雄各打一条，带自己的 `player_id` 和槽位→技能名；`DotaSession.lua_status()` 因此按 player id 索引 | ✅ |
+| 建筑数量 | 每方 11 座塔（`unit_type=6`）+ 1 个基地（`unit_type=9`）；前哨 / 双子门 / 莲花池是 `unit_type=10`，不会混进塔的计数 | ✅ |
+| 内置 AI 作为 5 人对手 | 会分路、补刀、抱团推进、破塔破基地；实测整局把脚本队打成 0 杀 42 死、塔 2:11 | ✅ |
+
+## 1.2 GOTV 录像会让客户端崩溃（2026-09 实测）
+
+**根因：GOTV 自己的 `HLTVServerAsync` 线程段错误，把整个客户端带崩。** 不是「录像抢了 worldstate socket」——
+socket 断只是进程没了的副作用。macOS 崩溃报告（`~/Library/Logs/DiagnosticReports/dota2-*.ips`）里两次
+自发崩溃都是：
+
+```
+exception: EXC_BAD_ACCESS (SIGSEGV), KERN_INVALID_ADDRESS
+faulting thread 24: HLTVServerAsync
+   libengine2.dylib +0x282cb3 / +0x286d6d / ...
+   libtier0.dylib   CThread::ThreadProc(void*)
+```
+
+（本机是 Apple Silicon `Mac16,1`，Dota 只有 x86-64 版，崩溃报告里 `"translated": true`，即跑在 Rosetta 下。
+这个崩溃是不是 Rosetta 或 macOS 独有，**没有在别的平台验证过**。）
+
+崩溃时间点 = GOTV **开始广播**的时刻，也就是「广播源起点 + `tv_delay`」。实测广播源起点稳定在
+`dota_time ≈ +19.2`：
+
+| `+tv_*` 参数 | 客户端活到 | demo 里的对局内容 |
+|---|---|---|
+| 不加（对照组） | **不崩**，180s 看完，dota_time 到 599 | 不录 |
+| `tv_enable 1 tv_autorecord 1`（引擎默认 delay，约 120） | 崩在 `dota_time` **139.2**（= 19.2 + 120） | 有，约 110 秒画面 |
+| `+ tv_delay 90` | 崩在 `dota_time` **109.2**（= 19.2 + 90） | 有：829 个包 / 812 个 `DEM_Packet`，tick 36–3303 |
+| `+ tv_delay 0` | 广播立刻开始，**一帧 actionable worldstate 都收不到** | 没有文件 |
+| `+ tv_delay 3600` | **不崩**，180s 看完 | **没有画面**：15 个包，0 个 `DEM_Packet` |
+| `+ tv_advertise_watchable 0 + tv_maxclients 0` | 立刻崩 | 没有文件 |
+
+结论：**在这台机器上没有能同时要到「完整录像」和「跑完一局」的配置**。`tv_delay` 只是在挪崩溃时刻——
+挪早了录不到画面，挪到比赛结束之后就等于没录。demo 的进度永远落后实时 `tv_delay`。
+
+其它顺带测到的：
+
+- 重连没用：socket 断掉后 `connect()` 能瞬间连上一次，随即再次 reset，之后端口就再也不接了——因为进程已经没了。
+- **客户端没有任何优雅退出的途径**：stdin 收不到命令（`BrokenPipeError`，`dota.sh` 起的进程 stdin 是关的），
+  SIGINT 让它段错误（exit 139，0.0s），SIGTERM 也是立刻死。所以 demo 文件头字节 8 的 `CDemoFileInfo`
+  偏移永远是 0（未收尾）。**但未收尾的 demo 实测可以在客户端里正常打开播放。**
+- 旧版（Last Order 时代 7.23/7.24）用 `+tv_delay 0 +tv_enable 1 +tv_title <id> +tv_autorecord 1
+  +tv_transmitall 1` 是能录到完整对局的；在当前这个 build 上同一组参数直接崩。
+
+环境的取舍：`replay_dir` 用的是上表第二行，也就是「崩之前能录到约 110 秒画面」。构造时会打 warning。
+换个平台（Linux / Windows 原生）很可能直接就好了，但没验证过。**这个开关先留着不修，排查步骤见
+第 5 节待办第 1 条。**
+
+## 1.3 无界面自动执行控制台命令，以及 GUI 模式自动进观战（2026-09 实测）
+
+**能自动执行的命令走两条路**：`<dota>/game/dota/cfg/dota2_env_server.cfg`（启动参数 `+servercfgfile` /
+`+lservercfgfile`，`-dedicated` 走前者、GUI 监听服务器走后者，日志里是 `SV: Executing listen server config file`）
+在服务器激活时 exec，里面的 `script_reload_code bots/server_actions` 把服务器 VM 脚本装进去；之后脚本随时可以
+`SendToServerConsole('<命令>')`。启动行上的 `+script_reload_code` 在地图加载前执行，静默丢掉 ✅。
+
+**GUI 模式的 `jointeam spec`**（监听服务器的真人在进队前没有 player id，`PlayerResource` 里只有 10 个 bot）：
+
+| 发法 | 结果 |
+|---|---|
+| `SendToConsole('jointeam spec')`（客户端控制台） | 每次都被拒：`[InputService] Cannot execute concommand 'jointeam', missing required FCVAR flag`（脚本源的命令要带特定标记，手敲不受限） ✅ |
+| 写进 cfg，随服务器激活 exec | 没测出结果：那两轮客户端在启动阶段就退出了（连 `con_logfile` 都没创建），原因是上一局的游戏进程还没退干净（见下），不是这条命令 ⚠️ |
+| `SendToServerConsole('jointeam spec')`（服务器控制台，`State_Get()` ≥ PRE_GAME 后） | 下一秒真人出现在观战队（player 10，team 1，conn 2），画面正常；两轮复现 ✅ |
+| `dota_spectator_auto_spectate_bot_games 1` | 没轮到测（上一条已成功）；按帮助文本它指的是 Valve 常驻的展示局 |
+
+`server_actions.lua` 现在进入 PRE_GAME 后每秒从服务器控制台发一次，直到 `PlayerResource` 里出现 team 1 的真人为止，
+然后打一行 `server_actions: the host watches from the spectator team`。`-dedicated` 下（`IsDedicatedServer()`）不发。
+服务器 VM 没有 `DOTA_TEAM_SPECTATOR` 常量（有 GOODGUYS / BADGUYS / NEUTRALS / NOTEAM），脚本里写的是字面量 1。
+
+**`stop_dota` 以前只杀壳** ✅：`dota.sh` 是 bash 包装，`process.terminate()` 只 SIGTERM 了 bash，`dota2` 本体成为孤儿继续跑
+（GUI 窗口一直开着），下一次 `run_dota()` 开头的 `pkill dota2` 才杀它，新实例紧接着启动就撞上它的退出过程，在启动阶段
+自己退出。现在 `run_dota` 用 `start_new_session` 起进程、`stop_dota` 对整个进程组发信号并在 `pkill` 后等到没有
+`dota2` 进程为止。
 
 ## 2. Protobuf（`CMsgBotWorldState`）
 
@@ -65,14 +153,107 @@
   `ability_capture`、`twin_gate_portal_warp`、`ability_lamp_use` 等通用技能。环境通过 Lua 在开局上报
   槽位→技能名（`env.unwrapped.ability_names()`），并支持 `"slot:N"` 加点，不再硬编码技能名。
 - **金钱异常** ⚠️：实测中英雄第一次死亡后不久金钱从几百跳到 5000+，原因未查（可能是新版 1v1 模式或 bot 的补偿机制）。
-- **地图** ✅/⚠️：中路一塔坐标没变（天辉 -1544,-1408 / 夜魇 524,652），但 7.33 起地图整体变大
-  （实测单位范围 x∈[-8088, 8167]，泉水在 ±7400），新增前哨、双子门、莲花池等。
-  旧的 `data/*7.24b*` gridnav/高度图不能再用，需要重新导出。
+- **地图** ✅：中路一塔坐标没变（天辉 -1544,-1408 / 夜魇 524,652），但 7.33 起地图整体变大，
+  gridnav 现在是 x∈[-10240, 10240]、y∈[-10752, 10240]（旧图 ±8288）；x∈[-8088, 8167] 是两个智慧神龛，
+  不是地图边界。新增前哨、双子门、莲花池、魔方、Watcher 等。旧的 `data/*7.24b*` 全部作废，已按
+  ClientVersion 6934 / 7.41f 重新导出为 `dota2_env/data/map.json`（来源与实测结论见
+  [MAP_DATA.md](MAP_DATA.md)）。
 - **信使** ✅：每个玩家一个信使（`unit_type=11`，每队 5 个），但顶层 `couriers` 列表实测为空，
   信使信息要从 `units` 里取。
-- **符文** ✅/⚠️：`rune_infos` 实测有 4 个点位（开局 type=-1）；新版符文种类和刷新规则与 7.24 不同，需重新核对。
+- **符文** ✅：`rune_infos` 的 4 个点位就是 2 个强化神符点和 2 个赏金神符点（开局 type=-1、status=2 即 MISSING）；
+  `RUNE_BOUNTY_3/4` 已返回 (0,0,0)。经验神符 7.38 起换成了智慧神龛（`npc_dota_xp_fountain`，中立建筑）；
+  bot API 新增 `RUNE_WATER`=7、`RUNE_XP`=8、`RUNE_SHIELD`=9 三种类型常量。
 - **物品**：TP 固定在物品槽位 15 ✅。⚠️ 旧的固定出装路线（`nevermore.py`）和禁用物品规则需要对照新版物品表重新核对。
+- **物品使用** ✅（2026-09，1v1 headless）：Lua 的 `GetItemInSlot():GetName()`、`GetBehavior()` 和
+  `ABILITY_BEHAVIOR_*` 常量都能用。按施法方式对自己用：仙灵火、治疗药膏、净化药水、吃树（一塔旁）、假眼都生效；
+  树枝放脚下在一塔旁能种、在泉水里种不出来，往前 150 放也种不出来；圆环（被动）什么都不发生。
+  被动物品和被动技能一样，worldstate 里 `is_fully_castable` 是 true，只能靠 Lua 的 `GetBehavior()` 区分。
+- **施法方式** ✅（2026-09，5v5 headless）：`GetBehavior()` / `GetTargetTeam()` 可用，常量值是 `NO_TARGET=4`、
+  `UNIT_TARGET=8`、`POINT=16`、`PASSIVE=2`、`VECTOR_TARGETING=2^30`，目标阵营 `FRIENDLY=1`、`ENEMY=2`。
+  矢量施法的技能（帕克幻象法球、滚滚虚张声势）同时带 `POINT`。对只能指地面的技能下单位指令
+  （`Action_UseAbilityOnEntity`），客户端直接忽略：法球、墨客的笔、滚滚、榴霰弹都不放，蓝和冷却都不动；
+  龙破斩、裂地尖刺带 `UNIT_TARGET` 所以可以。同样这些技能用 `Action_UseAbilityOnLocation` 全部能放，
+  滚滚会冲向那个点，第二个点传不进去（见 3.1）。worldstate 的 `cast_range` 和 Lua 的 `GetCastRange()` 一致，没学的技能是 0。
 - 填充位英雄仍可选 `npc_dota_hero_wisp`（hero_id 91）✅。
+
+## 3.1 矢量施法的第二个点（2026-09 实测，ClientVersion 6934）
+
+**结论：bot API 给不了第二个点；服务器 VM 的 `ExecuteOrderFromTable` 可以，条件是 `TargetIndex = 0`** ✅。
+环境现在就这么做：`bridge/lua/server_actions.lua` 由 `cfg/dota2_env_server.cfg`（`+servercfgfile`，服务器激活时
+exec）加载进服务器 VM，每 tick `loadfile` 同一份 `bots/actions_t<team>.lua`，把 Python 发的
+`DOTA_UNIT_ORDER_CAST_VECTOR` 变成两条指令：先 `DOTA_UNIT_ORDER_VECTOR_TARGET_POSITION`（=30）带第二个点，
+再 `DOTA_UNIT_ORDER_CAST_POSITION` 带起点，两条都带 `TargetIndex = 0`、`AbilityIndex = 技能 entindex`。bot 那边
+对这条动作只做 `Action_ClearActions(false)`。不给第二个点时，它落在世界坐标原点附近（地图中心）。
+
+**为什么之前 13 组服务器端实验全失败**（反汇编 `libserver.dylib` 的 `DOTA_ExecuteOrders`，2026-09-22）：
+`ExecuteOrderFromTable` 解析表时 `TargetIndex` 缺省是 **-1**，而指令执行器对 30 号指令先看 TargetIndex：为 0
+走无目标路径，非 0 就按实体索引解析，-1 不在合法范围直接丢弃（错误码 7）。真人客户端发来的 30 号指令
+`target_index` 缺省是 0，所以没这个问题。显式写 `TargetIndex = 0`（或施法者自己的 entindex）之后：
+
+| 放法（服务器 VM，无界面 `-dedicated`） | 结果 |
+|---|---|
+| 只发 5 号（对照） | 滚滚冲到 A，挥砍朝地图中心（43-45°） |
+| 30 号带 B + 5 号带 A，同一 think，`TargetIndex = 0` | **挥砍朝 B（270°）**，重复 4 次都一样 |
+| 同上，`TargetIndex = 施法者 entindex` | 270° |
+| 30 号带 B，下一 think 再发 5 号 | 270° |
+| 30 号带 A、5 号带 B（对调） | 冲到 B，挥砍朝 A（88°）：施法指令的点是起点，30 号的点是终点 |
+| 30 号的点放到 2000 远 | 270°：只取方向 |
+| bot 正在 `Action_MoveDirectly` 时服务器发两条 | 照样冲、照样 270°，bot 的移动不会盖掉它；同一 tick 再 `Action_ClearActions(false)` 也不影响 |
+| 帕克幻象法球 30 号带 B + 5 号带 A | 球拐向 B（277°），对照组拐向地图中心（73°） |
+
+`+script_reload_code bots/<file>` 写在启动行**没有用**（地图还没加载，静默丢掉）；`servercfgfile` 指向的 cfg
+在服务器激活时（game_time 1.0）exec，VM 已就绪 ✅。服务器 VM 里有 `loadfile` / `dofile` / `require` /
+`DoIncludeScript` / `LoadKeyValues` / `SendToServerConsole`，没有 `io` / `os`；`loadfile` 每次都读到新内容 ✅。
+`PlayerResource:GetSelectedHeroEntity(pid)` 对 bot 有效，`GetAbilityByIndex(i)` 和 bot API 的 `GetAbilityInSlot(i)`
+顺序一致 ✅。
+
+哪些技能是矢量以运行时的 `GetBehavior()` 为准：实测帕克幻象法球、滚滚虚张声势带这一位；按 npc 数据还有残阴、
+复制之墙、烈焰之军、狂风之力、回身踢、弹无虚发，以及魔晶 / 神杖改出来的动能栅栏、海象飞踢等（没有逐个实测）。
+下面是 bot API 那 46 组的记录，结论仍然有效：**bot API 自己给不了第二个点**。
+
+**缺省方向**（只给一个点）：
+
+- 滚滚冲到给的点，冲刺和挥砍时身体一直对着同一个固定点。东、西、北共 5 次冲刺拟合出来是 (90, 80)，误差 2.3°
+  （直接取原点是 3.7°）；往西冲时挥砍朝东北偏东 29°。
+- 帕克的法球朝西放，先往西南飞再掉头往东北；朝东放，332° 出手、拐到 73°。都是往地图中心那一侧拐。
+- 自定义游戏库 Nibuja05/dota_vector_targeting 里方向 = 第二个点 − 起点。引擎如果把没设过的第二个点当 (0, 0, 0)，
+  就正好是"从起点指向原点"，和实测对得上 ⚠️（推断，原版技能的引擎代码看不到）。
+
+**试过的放法**：滚滚站在泉水边 (-7000, -6600)（回蓝快），起点 A 在东边 400，终点 B 在 A 南边 400，想要的是朝南
+（270°）挥砍；帕克同样站位，起点放到 800，终点距离 200 / 400 / 1000 都试过，想要的是球往南拐。
+
+| 途径 | 试了什么 | 组数 | 结果 |
+|---|---|---|---|
+| bot API | 只给一个点（对照） | 滚滚、帕克各 1 | 缺省方向 |
+| bot API | 再补一次终点施法：`Action_` / `ActionPush_` / `ActionQueue_` × 同一 think / 下一 think / 抬手时 / 出手后 | 各 12 | 缺省方向 |
+| bot API | 先给终点再给起点；先 ping 终点；施法前后插 `MoveToLocation` / `MoveDirectly` | 各 8 | 缺省方向 |
+| bot API | 只改终点距离（帕克，200 / 1000） | 4 | 缺省方向 |
+| bot API | `Action_UseAbilityOnLocation(h, v, true)`（网上流传的"第三个参数表示排队"） | 1 | 报错 `called with 4 arguments - expected 3`：客户端里的签名是 `(HSCRIPT, const VectorWS &)` |
+| 服务器端脚本，**没设 `TargetIndex`** | `ExecuteOrderFromTable` 发 `DOTA_UNIT_ORDER_VECTOR_TARGET_POSITION`（=30）：和施法指令同帧前 / 后、隔一帧、连发 0.3 秒、配排队施法、配 `CastAbilityOnPosition`、两点对调、服务器发完 bot 再施法 | 滚滚 4、帕克 9 | 缺省方向：30 号指令被引擎丢掉了（TargetIndex 缺省 -1，见上） |
+
+**顺带测清的 bot 指令规则**（所有技能都一样，环境也会碰到）：
+
+- 同一次 think 里连下两条施法：后下的 `Action_` / `ActionPush_` 生效（冲刺去了 B），`ActionQueue_` 排在后面。
+- 从下一次 think 开始，同一技能还在转身 / 抬手时，新下的同技能施法被忽略，技能照第一个点放；排队或压栈的那条
+  在技能进入冷却后被丢掉。所以连续两帧对同一技能换目标，第二次不生效。
+- `Action_*` 调用时替换整个队列；`DOTA_UNIT_ORDER_NONE`（NOOP）只画圈，不碰队列。
+
+**服务器端脚本**：本地房间开作弊（启动参数自带 `+sv_cheats 1`）后，控制台 `script_reload_code bots/<文件名>` 能把
+`bots/` 下的 Lua 加载进服务器 VM（ryndrb/dota2bot 的 Buff 模式、Fretbots 都这么做），里面有 `ExecuteOrderFromTable`、
+`HeroList`、`SpawnEntityFromTableSynchronous`。无界面时靠 `servercfgfile`（见上）自动加载。标准对局里
+`GameRules:GetGameModeEntity()` 是 nil，挂不上 `SetExecuteOrderFilter`。`ExecuteOrderFromTable` 只认 `UnitIndex /
+OrderType / TargetIndex / AbilityIndex / Position / Queue`（二进制里的键名就这六个），没有下令玩家这一项，
+脚本下的指令在日志里叫 "Game code"。
+
+**参考**：Valve 的 [Dota2-Gameplay#7675](https://github.com/ValveSoftware/Dota2-Gameplay/issues/7675)（2023 年请求
+`UseAbilityOnEntityWithVector`，没有回复，2026-04 被机器人关掉）；[Nibuja05/dota_vector_targeting](https://github.com/Nibuja05/dota_vector_targeting)
+（自定义游戏库，只读客户端发来的两条指令：先 `VECTOR_TARGET_POSITION` 带第二个点，再 `CAST_POSITION` 带起点，自己
+不发指令）；ryndrb/dota2bot 等开源 bot 都只给一个点（玛西回身踢那里注释着 `-- vector targeted; not reliable`）。
+
+**怎么复测**：bot 侧探针 Lua 写在动作文件的 `return '<json>'` 前面（两个 VM 每次 think 都 `loadfile` 这个文件，
+所以要用 `if GetBot ~= nil then ... end` 包起来）；服务器侧探针放进会话目录、写一个 cfg 让 `+servercfgfile` 指过去，
+都不用改仓库里的 Lua。用 `GetBot():GetUnitName()` 选中英雄，按阶段调 bot API，逐 think 打印 `GetLocation()` / `GetFacing()`（滚滚挥砍时的
+朝向就是矢量方向）和 `GetLinearProjectiles()`（法球的位置和速度）。有界面时控制台开 `dota_ability_debug 1` 免冷却。
 
 ## 4. Python 层
 
@@ -80,7 +261,7 @@
 |---|---|---|
 | Python | 3.8 | 3.10+（实测 3.12） |
 | protobuf | 3.x 生成码 | protoc 29 生成码 + 运行时 7.x |
-| 依赖 | tensorflow 2.3、psutil、PyYAML | 仅 protobuf |
+| 依赖 | tensorflow 2.3、psutil、PyYAML | 仅 protobuf（PyYAML 和 httpx 回到了可选的 `[llm]` extra，只有 LLM 对局配置用） |
 | 路径 | 全部相对 CWD，游戏路径写在 `play_with_human_local.py` 顶部，`dota_game.py` 反向 import 它 | 包内定位 Lua；`DOTA_GAME_PATH` 环境变量或默认 Steam 路径 |
 | 接口 | 手写 `Dota2Env.reset/step`，返回原始 protobuf | `gymnasium.Env`：Dict 观测/动作空间、action mask、reward、terminated/truncated，通过 `check_env` |
 | 动作文件写入 | 直接写，靠 Lua 端容错；JSON 里有引号/反斜杠会破坏 Lua 字符串 | 先写临时文件再 `os.replace` 原子替换；对 `\` 和 `'` 转义 |
@@ -90,9 +271,20 @@
 
 ## 5. 后续待办
 
-1. 从新客户端导出 `items`（物品名 / 价格 / 禁用规则）；技能名已可在运行时从 Lua 拿到。
-2. 重新导出地图 gridnav / 高度（如果 LLM agent 还需要局部地图的话）。
-3. 验证 `HOST_MODE_GUI_MENU`（人类自建房间对战）流程在新版大厅 UI 下是否还能把 bot 脚本指到本地 `bots`。
-4. `host_timescale` 4× 以上的上限；多实例并行（端口、`pkill`、`bots` 软链接目前都是全局的）。
-5. 查清死亡后金钱暴涨的原因。
-6. 观测里还没有：物品栏、modifier、投射物、树/地形；动作里还没有：物品使用、指向地点的技能、信使。
+1. **录像只能录到开局约 110 秒**（`replay_dir`，现状见 1.2 节）。根因是客户端 GOTV 的 `HLTVServerAsync`
+   线程段错误，不在我们这边，所以先留着这个开关不修，按这个顺序查：
+   (a) 换 Linux / Windows 原生跑同一组 `+tv_*`，确认是不是 macOS + Rosetta 独有——**这一步能不能修全看它**；
+   (b) 如果是平台独有，就按平台决定 `replay_dir` 的默认行为（比如 macOS 上直接拒绝并说明原因）；
+   (c) 客户端更新后重测一次，崩溃栈用 `~/Library/Logs/DiagnosticReports/dota2-*.ips` 对；
+   (d) 如果 Valve 一直不修，又确实需要回看，改成录 worldstate 流（每帧 `CMsgBotWorldState` 落盘，
+       用 `text.py` 的 `describe()` 当文本回放）——这条一定可用，但看不到画面。
+2. ~~导出物品价格~~ 已完成：`dota2_env/data/items.json` / `abilities.json` / `heroes.json`（中英文，
+   `scripts/fetch_game_text.py`，见 [MAP_DATA.md](MAP_DATA.md)）。还剩禁用物品规则。
+3. ~~重新导出地图 gridnav / 高度~~ 已完成：`dota2_env/data/map.json`（`scripts/extract_map.py`），并接进了观测
+   （`local_map` / `runes` / `landmarks`）。`tree_events` 跟着本队视野走（迷雾里的变化再次看到时带 `delayed` 补报），
+   种树枝不产生事件（见 MAP_DATA.md 4.5）。后续：发芽的事件、前哨被占领后 `team_id` 是否跟着变还没验证。
+4. 验证 `HOST_MODE_GUI_MENU`（人类自建房间对战）流程在新版大厅 UI 下是否还能把 bot 脚本指到本地 `bots`。
+5. `host_timescale` 4× 以上的上限；多实例并行（端口、`pkill`、`bots` 软链接目前都是全局的）。
+6. 查清死亡后金钱暴涨的原因。
+7. 观测里还没有：modifier、投射物、肉山 / 魔方当前在哪；动作里还没有：对队友施法、信使。矢量施法的第二个点
+   实测给不了（3.1），要再试就换新思路，别重复表里已经试过的。

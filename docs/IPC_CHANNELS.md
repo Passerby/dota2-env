@@ -1,4 +1,4 @@
-# 通信通道：现在这三条，以及 Lua HTTP 到底行不行
+# 通信通道：现在这四条，以及 Lua HTTP 到底行不行
 
 实测环境：macOS（arm64），Dota 2 `steam.inf` ClientVersion **6934 / VersionDate 2026-09-18**，
 `-dedicated`，`host_timescale 2`。脚本：[`scripts/probe_http.py`](../scripts/probe_http.py)、
@@ -7,7 +7,8 @@
 
 ## 结论
 
-**保持现状。** 观测走 worldstate socket，动作走 `bots/actions_t<team>.lua`，回执走 console.log。
+**保持现状。** 观测走 worldstate socket，动作走 `bots/actions_t<team>.lua`，回执走 console.log；
+2026-09 起服务器 VM 也读同一份动作文件（见第 2.1 节），矢量施法就是这么发出去的。
 Lua 里的 HTTP 是真实存在、当前版本也确实能用的（见下），但拿它当动作通道，每一项指标都更差：
 
 | | 现在（文件 + socket + 日志） | 换成 Lua HTTP | |
@@ -33,7 +34,7 @@ console.log）。省掉的是日志解析，换来的是多一个 Steam 依赖�
 | 响应对象 | `{StatusCode = number, Body = string, Request = table}` ✅ |
 | 走哪条栈 | Steam：服务端看到 UA `Valve/Steam HTTP Client 1.0 (570)`，binary 里对应 `STEAMHTTP_INTERFACE_VERSION003` ✅ |
 | 载荷 | 上下行各测到 1 MB 都完整通过（0 / 1K / 64K / 256K / 1M，收发字节一致，没试更大），**大小几乎不影响 RTT**（1 MB 也是 ~70 ms）✅ |
-| 空载往返（30 次） | wall **67 / 71 / 137 ms**（min/median/max），**4 / 5 / 8 个 Think tick** ✅ |
+| 空载往返（30 次） | wall **67 / 71 / 137 ms**（min/median/max），**4 / 5 / 8 个 Think tick** ✅（两次独立运行：67/71/137 与 67/72/128，稳定） |
 | 阻塞时能否收到回调 | **不能** ✅：Lua 自旋 1745 ms 期间 `callback_ran_during_spin = false`，自旋一结束立刻投递（RTT 1746 ms）|
 | bot VM 沙箱 | `_VERSION = "Lua 5.1"`；`io`、`os`、`jit` 都是 **nil**；`require` / `loadfile` / `dofile` / `package` 可用；`DebugPause` 存在 ✅ |
 
@@ -58,13 +59,28 @@ console.log）。省掉的是日志解析，换来的是多一个 Steam 依赖�
 0.100 游戏秒 = 3 个 tick，正好是「Lua 端 0.07 秒下限 + 下一次 Think」。没有抖动，没有丢包。
 HTTP 的 4–8 tick 是**在这之上**的额外往返，而且 Python 那边还什么都没算。
 
+还有一点：文件通道的延迟是按 **tick** 算的，HTTP 的往返是按**墙钟**算的（~70 ms 花在 Steam 的 HTTP 栈上，
+和载荷大小无关）。所以 timescale 开得越高，HTTP 折算成游戏时间越贵 —— 4 倍速下 71 ms 就是 0.28 游戏秒，
+而文件通道仍然是那几个 tick。（两边都只在 timescale 2 下实测过。）
+
+## 2.1 服务器 VM：同一份动作文件的第二个读者
+
+`bridge/lua/server_actions.lua` 由 `<dota>/game/dota/cfg/dota2_env_server.cfg`（启动参数 `+servercfgfile`，服务器激活时
+exec）加载进服务器 VM，用 `loadfile('bots/actions_t<team>')` 每 tick 读动作文件，按 `dotaTime` 去重，和 bot 一样等
+文件满 0.07 秒再执行。服务器 VM 有 `ExecuteOrderFromTable`，能发 bot API 没有的指令（矢量施法的
+`VECTOR_TARGET_POSITION`）；实测和 bot 的 `Action_*` 互不干扰（[VERSION_DIFF.md](VERSION_DIFF.md) 3.1）。
+它没有 `io` / `os`，回执仍然只能靠 `print` 进 console.log。启动行上的 `+script_reload_code` 在地图加载前执行、
+静默丢掉，cfg 是唯一能无界面自动加载服务器 Lua 的办法。有了它，控制台命令也能自动跑：cfg 里的行在服务器激活时
+执行，脚本里 `SendToServerConsole(...)` 随时执行（GUI 模式的 `jointeam spec` 就是这么发的）；`SendToConsole`
+（客户端控制台）对脚本源有 FCVAR 限制，`jointeam` 这类命令过不了（[VERSION_DIFF.md](VERSION_DIFF.md) 1.3）。
+
 ## 3. 其它候选通道
 
 | 通道 | 结论 |
 |---|---|
 | `-netconport`（TCP 控制台） | ✅ 不存在：当前 `libserver.dylib` 里搜不到 `netcon` 字符串，那是 Source 1 的东西 |
 | GSI（Game State Integration） | 只有记分板级别的粗粒度状态，由客户端推给 HTTP endpoint，做不了单位级观测 |
-| `-dedicated` 下用 stdin 发控制台命令 | ⚠️ dotaservice 记录里可行，本仓库没验证；但 bot VM 没有读 convar 的函数，命令传不进 Lua |
+| `-dedicated` 下用 stdin 发控制台命令 | ✅ 不行：进程不读 stdin（见 `DotaGame.stop_dota` 的说明）。要往服务器 VM 送东西走 2.1 节的 cfg + 文件 |
 | `dota_bot_practice_script` | "Bot script ID to use for local games"，走创意工坊 UGC ID，帮不了本地多实例 |
 | worldstate socket | 就是现在用的，Valve 为机器学习开的官方口子，无可替代 |
 

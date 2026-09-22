@@ -62,19 +62,17 @@ function Think()
 	-- This gets called (every server tick AND until all heroes are picked).
 	-- This needs to gets called at least once if there is no human.
     local ids = GetTeamPlayers(GetTeam())
-    for i,v in pairs(ids) do
+    local heroes = config.heroes[tostring(GetTeam())]
+    -- ipairs, not pairs: python maps observation hero i to the i-th player id of the team, so the
+    -- slot order the heroes are handed out in has to be the array order of GetTeamPlayers.
+    for i,v in ipairs(ids) do
         -- If the human is in the unassigned slot, the radiant bots start at v = 2
         -- If the human is in the radiant coach slot, the radiant bots start at v = 2
         -- If the human is in the first radiant slot, the radiant bots start at v = 0
         -- If the human is in the second radiant slot, the radiant bots start at v = 1
         -- If the human is in the third radiant slot, the radiant bots start at v = 2
 		if IsPlayerBot(v) and IsPlayerInHeroSelectionControl(v) then
-        -- if i == 1 and GetTeam() == TEAM_RADIANT then
-            if i == 1 then
-                SelectHero( v, config.heroes[tostring(GetTeam())] );
-            else
-                SelectHero( v, "npc_dota_hero_wisp" );
-            end
+            SelectHero( v, heroes[i] or "npc_dota_hero_wisp" );
 		end
 	end
 end

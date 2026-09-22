@@ -1,6 +1,7 @@
 -------------------------------------------------------------------------------
 --- AUTHOR: Nostrademous
 -------------------------------------------------------------------------------
+local behavior = require( "bots/behavior" )
 
 local UseAbilityOnEntity = {}
 
@@ -20,8 +21,7 @@ function UseAbilityOnEntity:Call( hUnit, intAbilitySlot, hTarget, iType )
     if intAbilitySlot[1] >= 0 then
         hAbility = hUnit:GetAbilityInSlot(intAbilitySlot[1])
     else
-        itemSlot = -intAbilitySlot[1] - 1
-        hAbility = hUnit:GetItemInSlot(itemSlot)
+        hAbility = hUnit:GetItemInSlot(-intAbilitySlot[1] - 1)
     end
 
     if not hAbility then
@@ -36,9 +36,11 @@ function UseAbilityOnEntity:Call( hUnit, intAbilitySlot, hTarget, iType )
     -- or any debuffs on the hUnit (e.g., silenced). We assume
     -- only valid and legal actions are agent selected
     if not hTarget:IsNull() and hTarget:IsAlive() then
-        local vLoc = hTarget:GetLocation()
-
-        if iType == nil or iType == ABILITY_STANDARD then
+        -- A skill aimed at the ground lands where the target stands, the way a player clicking a unit casts it:
+        -- the client ignores a unit order for a skill that only takes a point.
+        if not behavior.Has(hAbility, ABILITY_BEHAVIOR_UNIT_TARGET) and behavior.Has(hAbility, ABILITY_BEHAVIOR_POINT) then
+            hUnit:Action_UseAbilityOnLocation(hAbility, hTarget:GetLocation())
+        elseif iType == nil or iType == ABILITY_STANDARD then
             hUnit:Action_UseAbilityOnEntity(hAbility, hTarget)
         elseif iType == ABILITY_PUSH then
             hUnit:ActionPush_UseAbilityOnEntity(hAbility, hTarget)

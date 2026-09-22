@@ -3,6 +3,7 @@
 import logging
 import socket
 import time
+from multiprocessing.queues import Queue
 from struct import unpack
 
 from dota2_env.bridge.constants import ACTIONABLE_GAME_STATES, DOTA_GAMERULES_STATE_POST_GAME
@@ -36,6 +37,15 @@ def parse_world_state(raw):
     return world_state
 
 
+def tree_events_only(world_state: CMsgBotWorldState) -> bytes:
+    """The tree events of world_state alone, serialized; empty when it has none.
+
+    Protobuf parses concatenated messages as one merged message, so these bytes put in front of a later
+    frame hand the events on to it, ahead of that frame's own.
+    """
+    return CMsgBotWorldState(tree_events=world_state.tree_events).SerializeToString()
+
+
 def read_world_state(sock):
     return parse_world_state(read_raw_world_state(sock))
 
@@ -53,13 +63,15 @@ def connect(port, host='127.0.0.1', timeout=None, retry_interval=1.0):
         time.sleep(retry_interval)
 
 
-def worldstate_listener(port, queue, max_queue_size=2, only_actionable=True):
-    """Child-process target: keep the socket drained and feed the newest states into `queue`.
+def worldstate_listener(port: int, queue: Queue, max_queue_size: int = 2, only_actionable: bool = True) -> None:
+    """Child-process target: keep the socket drained and feed the newest states into queue.
 
-    The queue carries serialized bytes (decode with `parse_world_state`), which is cheaper and
-    safer to pickle across processes than protobuf message objects.
+    The queue carries serialized bytes (decode with parse_world_state), which is cheaper and
+    safer to pickle across processes than protobuf message objects. Tree events are deltas, so
+    those of a frame that is not forwarded ride along with the next one that is.
     """
     sock = connect(port)
+    carried = b''
     while True:
         try:
             raw = read_raw_world_state(sock)
@@ -72,11 +84,14 @@ def worldstate_listener(port, queue, max_queue_size=2, only_actionable=True):
         # POST_GAME is forwarded too, so consumers can see the episode end.
         playing = world_state.game_state in ACTIONABLE_GAME_STATES and len(world_state.units) > 0
         if only_actionable and not playing and world_state.game_state != DOTA_GAMERULES_STATE_POST_GAME:
+            carried += tree_events_only(world_state)
             continue
         # qsize() is not implemented on macOS.
         try:
             if queue.qsize() >= max_queue_size:
+                carried += tree_events_only(world_state)
                 continue
         except NotImplementedError:
             pass
-        queue.put(raw)
+        queue.put(carried + raw)
+        carried = b''

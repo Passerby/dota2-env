@@ -2,6 +2,7 @@
 name = "dota2-env"
 version = "0.1.0"
 description = "Python <-> Dota 2 bot-script bridge (worldstate socket + Lua action files), extracted from LastOrder-Dota2"
+license = "MIT"
 requires-python = ">=3.10"
 dependencies = ["protobuf>=5.29", "gymnasium>=1.0", "numpy"]
 
@@ -13,7 +14,10 @@ build-backend = "hatchling.build"
 packages = ["dota2_env"]
 
 [project.optional-dependencies]
-dev = ["pytest", "ruff>=0.16", "pre-commit"]
+# pyyaml was dropped when this repo was extracted (docs/VERSION_DIFF.md); it is back for the LLM match
+# config only, which is why the environments themselves still install with protobuf, gymnasium, numpy.
+llm = ["pyyaml>=6", "httpx>=0.27", "python-dotenv>=1.0"]
+dev = ["pytest", "ruff>=0.16", "pre-commit", "pyyaml>=6", "httpx>=0.27", "python-dotenv>=1.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -48,6 +52,8 @@ select = [
 # ISC001 is what the formatter already handles; PL refactor rules (PLR) are off because
 # DotaMid1v1Env.__init__ legitimately takes one keyword per env parameter.
 ignore = ["ISC001"]
+# The LLM prompts are Chinese, and RUF001 would otherwise flag every piece of Chinese punctuation.
+allowed-confusables = ["，", "：", "；", "（", "）"]
 
 [tool.ruff.lint.per-file-ignores]
 # do_GET is the method name http.server dispatches to.

@@ -10,10 +10,12 @@ from multiprocessing import Process, Queue
 
 from dota2_env.bridge.constants import TEAM_DIRE, TEAM_RADIANT
 from dota2_env.bridge.game import DotaGame
-from dota2_env.bridge.worldstate import parse_world_state, worldstate_listener
+from dota2_env.bridge.protos.dota_gcmessages_common_bot_script_pb2 import CMsgBotWorldState
+from dota2_env.bridge.worldstate import parse_world_state, tree_events_only, worldstate_listener
 
 RE_LUARDY = re.compile(r'LUARDY\s+(\{.*\})')
 RE_ACK = re.compile(r'ACK\s+(\{.*\})')
+RE_SLOTS = re.compile(r'SLOTS\s+(\{.*\})')
 RE_FORT_DESTROYED = re.compile(r'Building: npc_dota_(goodguys|badguys)_fort destroyed')
 
 
@@ -61,14 +63,18 @@ class ActionDelivery:
 
 
 class DotaSession:
-    def __init__(self, team_id, keep_files=False, **game_kwargs):
+    def __init__(self, team_id, keep_files=False, replay_dir=None, **game_kwargs):
+        """replay_dir: record the match and move the .dem there on close(); None records nothing."""
         self.team_id = team_id
         self.keep_files = keep_files  # keep the session folder (lua, console.log) after close()
-        self.game = DotaGame(**game_kwargs)
+        self.replay_dir = replay_dir
+        self.replay_path = None  # where close() put the .dem
+        self.game = DotaGame(record_replay=replay_dir is not None, **game_kwargs)
         self._queue = None
         self._listener = None
         self._action_ids = itertools.count()
         self.delivery = ActionDelivery()
+        self.cast_slots = {}  # player id -> {ability index: (name, kinds)}, from lua's SLOTS lines
         self.skipped_observations = 0
         self._log_offset = 0
 
@@ -80,21 +86,27 @@ class DotaSession:
         )
         self._listener.start()
 
-    def observe(self, timeout):
-        """Newest CMsgBotWorldState; blocks until one arrives, raises queue.Empty after `timeout` seconds."""
+    def observe(self, timeout: float) -> CMsgBotWorldState:
+        """Newest CMsgBotWorldState; blocks until one arrives, raises queue.Empty after timeout seconds.
+
+        Tree events are deltas, so those of the frames skipped on the way are carried into it.
+        """
         raw = self._queue.get(timeout=timeout)
+        carried = b''
         while True:  # skip ahead if we have fallen behind
             try:
-                raw = self._queue.get_nowait()
-                self.skipped_observations += 1
+                newer = self._queue.get_nowait()
             except queue_lib.Empty:
-                return parse_world_state(raw)
+                return parse_world_state(carried + raw)
+            carried += tree_events_only(parse_world_state(raw))
+            raw = newer
+            self.skipped_observations += 1
 
     def act(self, dota_time, actions, extra_actions=(), draw=()):
         """Write one action file. Lua runs the first of `actions` per player and all `extra_actions`.
 
-        `actions` needs an entry for the controlled player (DOTA_UNIT_ORDER_NONE to do nothing): lua
-        only marks a file as executed once it found one, and would re-run `extra_actions` every tick.
+        actions needs an entry for every controlled player (DOTA_UNIT_ORDER_NONE to do nothing):
+        a hero that finds none never marks the file as executed and re-runs extra_actions every tick.
         """
         action_id = next(self._action_ids)
         self.delivery.sent(action_id, list(extra_actions))
@@ -111,7 +123,12 @@ class DotaSession:
         self.game.write_action(data=data, team_id=self.team_id)
 
     def poll_delivery(self):
-        """Read the ACK lines lua has printed since the last call and update `self.delivery`."""
+        """Read what lua has printed since the last call: ACK lines into self.delivery, SLOTS into self.cast_slots.
+
+        The world state carries neither item names nor what a skill or item can be aimed at, so lua prints
+        both whenever they change. Indices are those of the ability action: skills 0-5, inventory slots 6-11;
+        kinds is a tuple of no_target / self / enemy / point, empty for a passive.
+        """
         path = self.game.console_log_path
         if not os.path.isfile(path):
             return self.delivery
@@ -127,12 +144,22 @@ class DotaSession:
                 record = json.loads(match.group(1))
                 if record.get('team') == self.team_id:
                     self.delivery.acked(int(record['id'].strip('#')), record['status'], record['delay'])
+            match = RE_SLOTS.search(line)
+            if match:
+                record = json.loads(match.group(1))
+                if record['team'] == self.team_id:
+                    # dkjson writes any empty table as [], so no slots at all and a passive's kinds both come out so
+                    slots = record['slots'] or {}
+                    self.cast_slots[record['player_id']] = {
+                        int(index): (slot['name'], tuple(slot['kinds'])) for index, slot in slots.items()
+                    }
         return self.delivery
 
     def lua_status(self):
-        """The LUARDY records printed by our lua once a controlled hero is thinking, keyed by team id.
+        """The LUARDY records printed by our lua once a controlled hero is thinking, keyed by player id.
 
-        Each holds `player_id` and `abilities` ({slot: ability name}) as reported by the running client.
+        Each holds team and abilities ({slot: ability name}) as reported by the running client.
+        Every agent-controlled hero prints its own record, so a 5v5 team contributes five of them.
         """
         status = {}
         if os.path.isfile(self.game.console_log_path):
@@ -141,7 +168,7 @@ class DotaSession:
                     match = RE_LUARDY.search(line)
                     if match:
                         record = json.loads(match.group(1))
-                        status[record.get('team')] = record
+                        status[record.get('player_id')] = record
         return status
 
     def match_winner(self):
@@ -159,11 +186,20 @@ class DotaSession:
         return None
 
     def close(self):
-        if self._listener is not None:
-            self._listener.terminate()
-            self._listener.join(timeout=5)
-            self._listener = None
-        self.game.stop_dota_pids()
-        self.game.remove_bot_symlink()
-        if not self.keep_files:
-            shutil.rmtree(self.game.session_folder, ignore_errors=True)
+        """Shut the client down cleanly, then collect the replay.
+
+        The symlink and cfg in the Dota install and the session folder are given up in a finally: leaving
+        a stale bots symlink behind breaks the next run, whatever went wrong before it.
+        """
+        try:
+            if self._listener is not None:
+                self._listener.terminate()
+                self._listener.join(timeout=5)
+                self._listener = None
+            self.game.stop_dota()
+            if self.replay_dir is not None:
+                self.replay_path = self.game.collect_replay(self.replay_dir)
+        finally:
+            self.game.remove_dota_files()
+            if not self.keep_files:
+                shutil.rmtree(self.game.session_folder, ignore_errors=True)

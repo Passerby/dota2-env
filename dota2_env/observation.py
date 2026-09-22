@@ -3,6 +3,12 @@
 The observation is hero-centric: one feature vector for our hero, one row per ability slot, and a
 table of the `MAX_UNITS` nearest units. Row `i` of the unit table is what `target = i` refers to
 in the action space; `Observation.unit_handles[i]` keeps the matching Dota entity handle.
+
+build_team_observation stacks TEAM_SIZE of those, one per controlled hero, and adds a
+team vector of the map-wide state that a single hero-centric view cannot show.
+
+The map part (local_map, runes, landmarks) comes from dota2_env.map_features, which also defines
+its feature order; it needs the TreeTable of the match and stays zero without one.
 """
 
 import math
@@ -15,16 +21,32 @@ from dota2_env.bridge.constants import (
     TEAM_DIRE,
     TEAM_RADIANT,
     UNIT_TYPE_CREEP_HERO,
+    UNIT_TYPE_FORT,
     UNIT_TYPE_HERO,
     UNIT_TYPE_JUNGLE_CREEP,
     UNIT_TYPE_LANE_CREEP,
     UNIT_TYPE_TOWER,
 )
+from dota2_env.bridge.protos.dota_gcmessages_common_bot_script_pb2 import CMsgBotWorldState
+from dota2_env.map_features import (
+    LANDMARK_FEATURES,
+    LANDMARKS,
+    MAP_FEATURES,
+    MAP_RADIUS,
+    MAP_SCALE,
+    RUNE_FEATURES,
+    RUNE_SPOTS,
+    TreeTable,
+    map_arrays,
+)
 
 MAX_UNITS = 32
+TEAM_SIZE = 5
+N_TOWERS = 11  # three per lane plus the two guarding the ancient
 N_ABILITIES = 6
+N_ITEM_SLOTS = 6  # the inventory; items in the backpack or the stash cannot be used
 UNIT_RADIUS = 1600.0
-MAP_SCALE = 8192.0
+MAP_SIDE = 2 * MAP_RADIUS + 1
 RESPAWN_LOCATION = {TEAM_RADIANT: (-6700.0, -6700.0), TEAM_DIRE: (6900.0, 6650.0)}
 
 OBSERVED_UNIT_TYPES = (
@@ -63,6 +85,7 @@ HERO_FEATURES = (
     'time_of_day',
 )
 ABILITY_FEATURES = ('level', 'cooldown', 'castable')
+ITEM_FEATURES = ('item_id', 'charges', 'cooldown', 'castable')
 UNIT_FEATURES = (
     'rel_x',
     'rel_y',
@@ -86,8 +109,12 @@ observation_space = spaces.Dict(
     {
         'hero': spaces.Box(-np.inf, np.inf, (len(HERO_FEATURES),), np.float32),
         'abilities': spaces.Box(-np.inf, np.inf, (N_ABILITIES, len(ABILITY_FEATURES)), np.float32),
+        'items': spaces.Box(-np.inf, np.inf, (N_ITEM_SLOTS, len(ITEM_FEATURES)), np.float32),
         'units': spaces.Box(-np.inf, np.inf, (MAX_UNITS, len(UNIT_FEATURES)), np.float32),
         'unit_mask': spaces.MultiBinary(MAX_UNITS),
+        'local_map': spaces.Box(-np.inf, np.inf, (len(MAP_FEATURES), MAP_SIDE, MAP_SIDE), np.float32),
+        'runes': spaces.Box(-np.inf, np.inf, (len(RUNE_SPOTS), len(RUNE_FEATURES)), np.float32),
+        'landmarks': spaces.Box(-np.inf, np.inf, (len(LANDMARKS), len(LANDMARK_FEATURES)), np.float32),
     }
 )
 
@@ -95,25 +122,23 @@ observation_space = spaces.Dict(
 @dataclass
 class Observation:
     arrays: dict
-    hero: object = None  # CMsgBotWorldState.Unit, None while the client does not report our hero
-    origin: tuple = None  # (x, y) that MOVE actions are relative to; None when the hero cannot move
+    hero: CMsgBotWorldState.Unit | None = None  # None while the client does not report our hero
+    origin: tuple[float, float] | None = None  # (x, y) that MOVE actions start from; None when the hero cannot move
     unit_handles: list = field(default_factory=list)
     units: list = field(default_factory=list)  # CMsgBotWorldState.Unit for every row of the unit table
 
 
-def lane_player_ids(world_state):
-    """{team_id: first player of the team}; in the 1v1 setup everyone else is an idle filler hero."""
-    first = {}
-    for player in world_state.players:
-        if player.team_id not in first or player.player_id < first[player.team_id]:
-            first[player.team_id] = player.player_id
-    return first
+def team_player_ids(world_state, team_id):
+    """Player ids of team_id, ascending. Row i of a team observation is the i-th of them, and in
+    the 1v1 setup the first one is the lane player (every other slot holds an idle filler hero)."""
+    return sorted(player.player_id for player in world_state.players if player.team_id == team_id)
 
 
 def find_hero(world_state, team_id, player_id=None):
     """The hero unit of `player_id`, by default of the team's lane player. None while it is not reported."""
     if player_id is None:
-        player_id = lane_player_ids(world_state).get(team_id)
+        team_players = team_player_ids(world_state, team_id)
+        player_id = team_players[0] if team_players else None
     for unit in world_state.units:
         if (
             unit.unit_type == UNIT_TYPE_HERO
@@ -138,7 +163,13 @@ def hero_abilities(hero):
     return [by_slot.get(slot) for slot in range(N_ABILITIES)]
 
 
-def _hero_vector(world_state, hero):
+def hero_items(hero):
+    """Item per inventory slot, None where the slot is empty."""
+    by_slot = {item.slot: item for item in hero.items}
+    return [by_slot.get(slot) for slot in range(N_ITEM_SLOTS)]
+
+
+def hero_vector(world_state, hero):
     facing = math.radians(hero.facing)
     return np.array(
         [
@@ -172,24 +203,39 @@ def _hero_vector(world_state, hero):
     )
 
 
-def build_observation(world_state, team_id, player_id=None):
+def build_observation(
+    world_state: CMsgBotWorldState,
+    team_id: int,
+    player_id: int | None = None,
+    hero_players: set[int] | None = None,
+    trees: TreeTable | None = None,
+) -> Observation:
+    """One hero-centric observation.
+
+    hero_players: player ids whose heroes may show up in the unit table; the default keeps only the
+                  two 1v1 lane players, because -fill_with_bots parks idle wisps in both fountains.
+    trees:        the match's tree table; without it the map part of the observation stays zero.
+    """
     arrays = {key: np.zeros(space.shape, space.dtype) for key, space in observation_space.spaces.items()}
     hero = find_hero(world_state, team_id, player_id)
     if hero is None:
         # Current clients stop reporting a hero that respawned until it has left the fountain
         # (see docs/VERSION_DIFF.md). Report it as standing on its spawn point so it can walk out.
         if player_id is None:
-            player_id = lane_player_ids(world_state).get(team_id)
+            team_players = team_player_ids(world_state, team_id)
+            player_id = team_players[0] if team_players else None
         if any(p.player_id == player_id and p.is_alive for p in world_state.players):
             origin = RESPAWN_LOCATION[team_id]
             arrays['hero'][HERO_FEATURES.index('x')] = origin[0] / MAP_SCALE
             arrays['hero'][HERO_FEATURES.index('y')] = origin[1] / MAP_SCALE
             arrays['hero'][HERO_FEATURES.index('is_alive')] = 1.0
             arrays['hero'][HERO_FEATURES.index('dota_time')] = world_state.dota_time / 600.0
+            if trees is not None:
+                arrays.update(map_arrays(trees, world_state, team_id, *origin))
             return Observation(arrays=arrays, origin=origin)
         return Observation(arrays=arrays)
 
-    arrays['hero'] = _hero_vector(world_state, hero)
+    arrays['hero'] = hero_vector(world_state, hero)
     for slot, ability in enumerate(hero_abilities(hero)):
         if ability is not None:
             arrays['abilities'][slot] = (
@@ -197,13 +243,25 @@ def build_observation(world_state, team_id, player_id=None):
                 min(ability.cooldown_remaining, 100.0) / 10.0,
                 float(ability.is_fully_castable),
             )
+    for slot, item in enumerate(hero_items(hero)):
+        if item is not None:
+            arrays['items'][slot] = (
+                item.ability_id,
+                item.charges / 10.0,
+                min(item.cooldown_remaining, 100.0) / 10.0,
+                float(item.is_fully_castable),
+            )
+    if trees is not None:
+        arrays.update(map_arrays(trees, world_state, team_id, hero.location.x, hero.location.y))
 
     nearby = []
-    players = set(lane_player_ids(world_state).values())
+    if hero_players is None:
+        both = (team_player_ids(world_state, TEAM_RADIANT), team_player_ids(world_state, TEAM_DIRE))
+        hero_players = {ids[0] for ids in both if ids}
     for unit in world_state.units:
         if unit.handle == hero.handle or not unit.is_alive or unit.unit_type not in OBSERVED_UNIT_TYPES:
             continue
-        if unit.unit_type == UNIT_TYPE_HERO and unit.player_id not in players:
+        if unit.unit_type == UNIT_TYPE_HERO and unit.player_id not in hero_players:
             continue
         d = distance(hero, unit)
         if d <= UNIT_RADIUS:
@@ -242,3 +300,89 @@ def build_observation(world_state, team_id, player_id=None):
         unit_handles=[u.handle for _, u in nearby],
         units=[u for _, u in nearby],
     )
+
+
+TEAM_FEATURES = (
+    'dota_time',
+    'time_of_day',
+    'heroes_alive',
+    'enemy_heroes_visible',
+    'gold',
+    'towers',
+    'enemy_towers',
+    'ancient_health_frac',
+    'enemy_ancient_health_frac',
+    'kills',
+    'deaths',
+)
+
+team_observation_space = spaces.Dict(
+    {
+        'heroes': spaces.Box(-np.inf, np.inf, (TEAM_SIZE, len(HERO_FEATURES)), np.float32),
+        'abilities': spaces.Box(-np.inf, np.inf, (TEAM_SIZE, N_ABILITIES, len(ABILITY_FEATURES)), np.float32),
+        'items': spaces.Box(-np.inf, np.inf, (TEAM_SIZE, N_ITEM_SLOTS, len(ITEM_FEATURES)), np.float32),
+        'units': spaces.Box(-np.inf, np.inf, (TEAM_SIZE, MAX_UNITS, len(UNIT_FEATURES)), np.float32),
+        'unit_mask': spaces.MultiBinary((TEAM_SIZE, MAX_UNITS)),
+        'local_map': spaces.Box(-np.inf, np.inf, (TEAM_SIZE, len(MAP_FEATURES), MAP_SIDE, MAP_SIDE), np.float32),
+        'runes': spaces.Box(-np.inf, np.inf, (TEAM_SIZE, len(RUNE_SPOTS), len(RUNE_FEATURES)), np.float32),
+        'landmarks': spaces.Box(-np.inf, np.inf, (TEAM_SIZE, len(LANDMARKS), len(LANDMARK_FEATURES)), np.float32),
+        'team': spaces.Box(-np.inf, np.inf, (len(TEAM_FEATURES),), np.float32),
+    }
+)
+
+
+@dataclass
+class TeamObservation:
+    arrays: dict
+    heroes: list = field(default_factory=list)  # one Observation per controlled hero, in player_ids order
+    player_ids: list = field(default_factory=list)
+
+
+def build_team_observation(
+    world_state: CMsgBotWorldState, team_id: int, player_ids: list[int], trees: TreeTable | None = None
+) -> TeamObservation:
+    """Row i of every array belongs to the hero of player_ids[i]."""
+    hero_players = {player.player_id for player in world_state.players}
+    heroes = [build_observation(world_state, team_id, player_id, hero_players, trees) for player_id in player_ids]
+    arrays = {key: np.zeros(space.shape, space.dtype) for key, space in team_observation_space.spaces.items()}
+    for row, observation in enumerate(heroes):
+        arrays['heroes'][row] = observation.arrays['hero']
+        arrays['abilities'][row] = observation.arrays['abilities']
+        arrays['items'][row] = observation.arrays['items']
+        arrays['units'][row] = observation.arrays['units']
+        arrays['unit_mask'][row] = observation.arrays['unit_mask']
+        arrays['local_map'][row] = observation.arrays['local_map']
+        arrays['runes'][row] = observation.arrays['runes']
+        arrays['landmarks'][row] = observation.arrays['landmarks']
+
+    enemy_team = TEAM_DIRE if team_id == TEAM_RADIANT else TEAM_RADIANT
+    # Note (ruidu): both sides have exactly N_TOWERS towers and one fort, and nothing else in the
+    # world state carries those unit types, so indexing by team id cannot miss (verified on a
+    # recorded frame: 11 towers and 1 fort per team, outposts are UNIT_TYPE_BUILDING).
+    towers = {TEAM_RADIANT: 0, TEAM_DIRE: 0}
+    ancient = {TEAM_RADIANT: 0.0, TEAM_DIRE: 0.0}
+    enemy_heroes = 0
+    for unit in world_state.units:
+        if unit.unit_type == UNIT_TYPE_TOWER and unit.is_alive:
+            towers[unit.team_id] += 1
+        elif unit.unit_type == UNIT_TYPE_FORT:
+            ancient[unit.team_id] = unit.health / max(unit.health_max, 1)
+        elif unit.unit_type == UNIT_TYPE_HERO and unit.team_id == enemy_team and unit.is_alive and not unit.is_illusion:
+            enemy_heroes += 1
+    arrays['team'] = np.array(
+        [
+            world_state.dota_time / 600.0,
+            world_state.time_of_day,
+            sum(player.is_alive for player in world_state.players if player.team_id == team_id) / TEAM_SIZE,
+            enemy_heroes / TEAM_SIZE,
+            sum(h.hero.reliable_gold + h.hero.unreliable_gold for h in heroes if h.hero is not None) / 10000.0,
+            towers[team_id] / N_TOWERS,
+            towers[enemy_team] / N_TOWERS,
+            ancient[team_id],
+            ancient[enemy_team],
+            sum(player.kills for player in world_state.players if player.team_id == team_id) / 50.0,
+            sum(player.deaths for player in world_state.players if player.team_id == team_id) / 50.0,
+        ],
+        dtype=np.float32,
+    )
+    return TeamObservation(arrays=arrays, heroes=heroes, player_ids=list(player_ids))

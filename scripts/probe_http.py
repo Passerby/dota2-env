@@ -321,7 +321,7 @@ def main() -> None:
         if payload_sizes:
             print(f'   payload bytes received: {json.dumps(payload_sizes)}', flush=True)
         game.stop_dota_pids()
-        game.remove_bot_symlink()
+        game.remove_dota_files()
         shutil.rmtree(game.session_folder, ignore_errors=True)
         server.shutdown()
 

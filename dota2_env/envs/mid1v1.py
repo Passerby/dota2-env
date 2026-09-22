@@ -14,8 +14,10 @@ from dota2_env.bridge.constants import (
     HOST_MODE_GUI,
     TEAM_RADIANT,
 )
-from dota2_env.bridge.game import CONTROL_AGENT, DEFAULT_HERO
+from dota2_env.bridge.game import CONTROL_AGENT, DEFAULT_HERO, get_default_game_path
+from dota2_env.bridge.protos.dota_gcmessages_common_bot_script_pb2 import CMsgBotWorldState
 from dota2_env.bridge.session import DotaSession
+from dota2_env.map_features import TreeTable, warn_if_stale
 from dota2_env.observation import build_observation, find_hero, observation_space
 from dota2_env.rewards import LaningReward, Mid1v1Rules, opposing
 from dota2_env.text import describe
@@ -55,17 +57,20 @@ class DotaMid1v1Env(gym.Env):
         starting_items=DEFAULT_STARTING_ITEMS,
         ability_priority=DEFAULT_ABILITY_PRIORITY,
         step_timeout=20.0,
+        replay_dir=None,
         keep_files=False,
         dota_path=None,
         session_factory=DotaSession,
     ):
         """
-        render_mode: "human" opens the game window (type `jointeam spec` in the console to get a camera);
+        render_mode: "human" opens the game window and puts you on the spectator team for a camera;
                      None or "ansi" run the headless dedicated server. "ansi" makes `render()` return text.
         opponent:    "builtin" (Valve's default bot AI) or "idle".
         starting_items / ability_priority: bought / levelled automatically; pass () to do it yourself
                      through `queue_purchase` and `queue_train_ability`.
         step_timeout: seconds without a new world state before the episode is truncated with `info["error"]`.
+        replay_dir:  record the match and move the .dem there on close(), e.g. "replays";
+                     a relative path lands under the current working directory. None records nothing.
         keep_files:  keep the session folder (generated lua, console.log) in the temp dir for debugging.
         session_factory: replaces the Dota bridge, used by the tests.
         """
@@ -84,15 +89,19 @@ class DotaMid1v1Env(gym.Env):
         self._session_kwargs = {
             'team_id': team_id,
             'keep_files': keep_files,
+            'replay_dir': replay_dir,
             'host_timescale': timescale,
             'ticks_per_observation': ticks_per_observation,
             'game_mode': DOTA_GAMEMODE_1V1MID,
             'host_mode': HOST_MODE_GUI if render_mode == 'human' else HOST_MODE_DEDICATED,
             'dota_path': dota_path,
-            'heroes': {team_id: hero, opposing(team_id): opponent_hero},
+            'heroes': {team_id: (hero,), opposing(team_id): (opponent_hero,)},
             'control': {team_id: CONTROL_AGENT, opposing(team_id): opponent},
         }
         self._session = None
+        self.trees = None  # the TreeTable of the current episode, fed every world state the session returns
+        warn_if_stale(dota_path or get_default_game_path())
+        self.replay_path = None  # the .dem of the last episode, once close() has collected it
         self._world_state = None
         self._observation = None
         self._player_id = None
@@ -110,8 +119,10 @@ class DotaMid1v1Env(gym.Env):
 
         # Buildings are reported a few frames before the heroes spawn; wait for ours.
         deadline = time.time() + timeout
+        self.trees = TreeTable()
         while True:
             world_state = self._session.observe(timeout=max(deadline - time.time(), 0.001))
+            self.trees.update(world_state)
             hero = find_hero(world_state, self.team_id)
             if hero is not None:
                 break
@@ -126,7 +137,7 @@ class DotaMid1v1Env(gym.Env):
 
     def step(self, action):
         assert self._session is not None, 'call reset() first'
-        bridge_action = actions.to_bridge_action(action, self._observation, self._player_id)
+        bridge_action = actions.to_bridge_action(action, self._observation, self._player_id, self.cast_slots())
         if bridge_action is None:
             bridge_action = {'actionType': 'DOTA_UNIT_ORDER_NONE', 'player': self._player_id}
 
@@ -149,6 +160,7 @@ class DotaMid1v1Env(gym.Env):
             except queue.Empty:
                 if time.time() >= deadline or self._session.match_winner() is not None:
                     return self._feed_ended()
+        self.trees.update(world_state)
         terminated, truncated, winner = self.rules(world_state)
         reward, components = self.reward_fn(previous, world_state, winner)
         self._set_state(world_state)
@@ -172,12 +184,13 @@ class DotaMid1v1Env(gym.Env):
 
     def render(self):
         if self.render_mode == 'ansi' and self._world_state is not None:
-            return describe(self._world_state, self.team_id, self._player_id, self.ability_names())
+            return describe(self._world_state, self.team_id, self._player_id, self.cast_slots())
         return None
 
     def close(self):
         if self._session is not None:
             self._session.close()
+            self.replay_path = self._session.replay_path
             self._session = None
 
     # -- extras ----------------------------------------------------------------------------------
@@ -190,22 +203,34 @@ class DotaMid1v1Env(gym.Env):
         """Level an ability with the next step; `ability` is a name or "slot:N"."""
         self._pending_extra_actions.append(actions.train_ability(self._player_id, ability))
 
+    def queue_chat(self, message, all_chat=True):
+        """Say `message` with the next step; `all_chat` False keeps it inside the team."""
+        self._pending_extra_actions.append(actions.chat(self._player_id, message, all_chat))
+
     def ability_names(self):
         """{slot: ability name} of our hero as reported by the running client (empty until lua has started)."""
         if not self._ability_names and self._session is not None:
-            record = self._session.lua_status().get(self.team_id, {})
+            record = self._session.lua_status().get(self._player_id, {})
             self._ability_names = {int(slot): name for slot, name in record.get('abilities', {}).items()}
         return self._ability_names
 
+    def cast_slots(self) -> dict[int, tuple[str, tuple[str, ...]]]:
+        """{ability index: (name, kinds)} of our hero as lua last reported them (empty until it has).
+
+        Indices are those of the ability action: skills 0-5, inventory slots 6-11. kinds says what the slot can
+        be aimed at (no_target, self, enemy, point) and is empty for a passive.
+        """
+        return dict(self._session.cast_slots.get(self._player_id, {})) if self._session is not None else {}
+
     def action_masks(self):
-        return actions.build_action_mask(self._observation, self.team_id)
+        return actions.build_action_mask(self._observation, self.team_id, self.cast_slots())
 
     def sample_legal_action(self):
         return actions.sample_masked_action(self.action_masks(), self.np_random)
 
-    def _set_state(self, world_state):
+    def _set_state(self, world_state: CMsgBotWorldState) -> None:
         self._world_state = world_state
-        self._observation = build_observation(world_state, self.team_id, self._player_id)
+        self._observation = build_observation(world_state, self.team_id, self._player_id, trees=self.trees)
 
     def _info(self):
         return {
