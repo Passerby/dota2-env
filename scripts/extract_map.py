@@ -35,7 +35,7 @@ from dota2_env.bridge.constants import (
     UNIT_TYPE_FORT,
     UNIT_TYPE_TOWER,
 )
-from dota2_env.bridge.game import CONTROL_AGENT, CONTROL_IDLE, DotaGame, get_default_game_path
+from dota2_env.bridge.game import CONTROL_AGENT, CONTROL_IDLE, DotaGame, get_default_game_path, read_vpk
 from dota2_env.bridge.worldstate import connect, parse_world_state, read_raw_world_state
 from dota2_env.map_features import GRIDNAV_TRAVERSABLE, MAP_PATH, RUNE_STATUS_AVAILABLE, load_map
 
@@ -101,28 +101,7 @@ def main() -> None:
         steam_inf = dict(line.strip().split('=', 1) for line in handle if '=' in line)
     print(f'client {steam_inf["ClientVersion"]} of {steam_inf["VersionDate"]}, patch {args.patch}', flush=True)
 
-    # maps/dota.gnv from the map's VPK (version 2: a tree of extension / directory / name strings).
-    with open(maps_vpk, 'rb') as vpk:
-        signature, version, tree_size = struct.unpack('<III', vpk.read(12))
-        assert (signature, version) == (0x55AA1234, 2), f'{maps_vpk} is not a version 2 VPK'
-        vpk.read(16)
-
-        def read_string() -> str:
-            text = bytearray()
-            while (char := vpk.read(1)) != b'\0':
-                text += char
-            return text.decode()
-
-        entries = {}
-        while extension := read_string():
-            while directory := read_string():
-                while name := read_string():
-                    _, preload, archive, offset, length, _ = struct.unpack('<IHHIIH', vpk.read(18))
-                    entries[f'{directory}/{name}.{extension}'] = (archive, offset, length, vpk.read(preload))
-        archive, offset, length, preload = entries['maps/dota.gnv']
-        assert archive == 0x7FFF, 'the gridnav is expected inside dota.vpk itself'
-        vpk.seek(28 + tree_size + offset)
-        gridnav = preload + vpk.read(length)
+    gridnav = read_vpk(maps_vpk, ('maps/dota.gnv',))['maps/dota.gnv']
     magic, cell, offset_x, offset_y, width, height, min_x, min_y = struct.unpack_from('<Ifffiiii', gridnav)
     assert magic == 0xFADEBEAD and offset_x == offset_y == cell / 2 and len(gridnav) == 32 + width * height
     cell, x0, y0 = int(cell), int(min_x * cell), int(min_y * cell)

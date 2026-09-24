@@ -15,6 +15,7 @@ from typing import Literal
 import yaml
 
 from dota2_env.bridge.constants import TEAM_DIRE, TEAM_RADIANT
+from dota2_env.game_text import load_records
 from dota2_env.observation import TEAM_SIZE
 
 Control = Literal['agent', 'builtin', 'idle']
@@ -67,9 +68,11 @@ class MatchConfig:
     spend_limit_usd: float = 2.0
     log_dir: str = 'logs'
     all_chat: bool = True
+    show_reason: bool = True  # each hero's latest REASON shown over its health bar; only a game window shows it
     share_team_state: bool = True
     render: bool = False
     plan_length: int = 1  # actions per reply, carried out one per frame; 1 is a single action as before
+    history_length: int = 6  # the agent's last commands, with where its hero stood, each prompt ends with
     log_prompts: bool = False  # also store every user message in the transcript, for debugging
     gateways: dict[str, GatewayConfig]
     radiant: TeamConfig
@@ -129,6 +132,9 @@ def build_team(team_id: int, data: dict[str, object], gateways: dict[str, Gatewa
             )
         )
     heroes = [agent.hero for agent in agents] if control == 'agent' else [str(hero) for hero in data['heroes']]
+    unknown = [hero for hero in heroes if hero not in load_records('heroes')]
+    if unknown:
+        raise ValueError(f'no such hero: {", ".join(unknown)} (the unit name, such as npc_dota_hero_lina)')
     if len(heroes) != team_size:
         raise ValueError(f'team {team_id} needs {team_size} heroes, got {len(heroes)}')
     if control == 'agent' and len(agents) != team_size:
@@ -150,6 +156,8 @@ def load_match(path: str) -> MatchConfig:
     dire = build_team(TEAM_DIRE, raw.get('dire') or {}, gateways, team_size)
     if settings.get('plan_length', 1) < 1:
         raise ValueError('plan_length must be at least 1')
+    if settings.get('history_length', 1) < 1:
+        raise ValueError('history_length must be at least 1')
     if 'agent' not in (radiant.control, dire.control):
         raise ValueError('at least one team must have control: agent, otherwise no LLM plays')
     # All Pick will not hand the same hero to both sides, and a repeat inside one team is a wasted slot.

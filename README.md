@@ -50,29 +50,35 @@ python examples/llm_match.py --config configs/match.example.yaml --dry-run   # L
 | `timescale` | `1.0` | `host_timescale`。实测 4 倍速稳定（20 step/s） |
 | `ticks_per_observation` | `6` | 每步的游戏 tick 数，30 tick = 1 游戏秒 |
 | `reward_fn` / `rules` | `LaningReward()` / `Mid1v1Rules()` | 可替换，见 `rewards.py` |
-| `starting_items` / `ability_priority` | 出门装 / `(5,0,3,4,1,2)` | 自动购买 / 自动加点；传 `()` 关闭，改用 `queue_purchase()` / `queue_train_ability()` |
+| `starting_items` / `ability_priority` | 出门装 / `(5,0,3,4,1,2)` | 自动购买 / 自动加点；传 `()` 关闭，改用 `queue_purchase()` / `queue_train_ability()`。天赋不自动加：每个到了等级、还没选的天赋层留一个技能点给 `TALENT` |
+| `restock_tp` | `True` | 身上、储藏处、信使都没有回城卷轴时自动买一张；野外买的放在储藏处，用 `COURIER` 送 |
 | `replay_dir` | `None` | 给个目录（相对路径相对 CWD）就录像，见下面「录像」（⚠️ 当前客户端上会让这一局提前崩） |
 
 **观测**（`spaces.Dict`，全部 float32，已归一化，字段名见 `observation.py` 的 `*_FEATURES`）
 
 | key | shape | 内容 |
 |---|---|---|
-| `hero` | (25,) | 位置、朝向、血/蓝、等级、攻击、金钱、补刀、状态、时间 |
+| `hero` | (28,) | 位置、朝向、血/蓝、等级、攻击、金钱、补刀、状态、时间、回城卷轴次数与冷却、储藏处件数 |
 | `abilities` | (6, 3) | 槽位 0-5：等级、冷却、是否可施放 |
 | `items` | (6, 4) | 背包格 0-5：物品 id、次数、冷却、是否可用；名字用 `env.unwrapped.cast_slots()` 读 |
+| `talents` | (8,) | 8 个天赋学了没有，每两个一层（10/15/20/25 级），下标就是 `TALENT` 的 `talent` |
 | `units` | (32, 16) | 1600 范围内最近的 32 个单位（英雄/小兵/野怪/塔），相对坐标、阵营、血量、几刀能杀、是否在打我… |
 | `unit_mask` | (32,) | `units` 哪些行有效 |
 | `local_map` | (3, 33, 33) | 以英雄所在格为中心、每格 64 单位的局部地图：不可走、活树、相对高度（比英雄高几级），见 [docs/MAP_DATA.md](docs/MAP_DATA.md) |
-| `runes` | (4, 4) | 4 个神符点（强化 / 赏金各 2）：相对位置、距离、现在有没有符（受视野限制） |
+| `runes` | (4, 4) | 4 个神符点（强化 / 赏金各 2）：相对位置、距离、可能有符（刷新时就标上，本队看到空了才清掉） |
 | `landmarks` | (10, 4) | 肉山坑、魔方、智慧神龛、莲花池、前哨各 2 个：相对位置、距离、前哨是否归我方 |
 
-**动作**（`spaces.Dict`）：`type`（NOOP / MOVE / ATTACK / CAST / CAST_TARGET / STOP / CAST_DIRECTION）、
-`move`（16 方向，每步约 300 距离）、`target`（`units` 表的行号）、`ability`（0-5 是技能槽，6-11 是背包格 0-5）。
+**动作**（`spaces.Dict`）：`type`（NOOP / MOVE / ATTACK / CAST / CAST_TARGET / STOP / CAST_DIRECTION / MOVE_TO /
+PICKUP_RUNE / TP / TALENT / COURIER）、
+`move`（16 方向，每步约 300 距离，下的是走寻路的 `MOVE_TO_POSITION`）、`target`（`units` 表的行号）、
+`ability`（0-5 是技能槽，6-11 是背包格 0-5）、`point`（`MOVE_TO` 的世界坐标 (x, y)：终点原样交给客户端，整条路由它规划，
+去远处用它，一步 300 的 `MOVE` 被墙挡住会原地不动；`TP` 也用它）、`rune`（`runes` 表的行号）、`talent`（`talents` 的下标）。
 `CAST` 无目标或对自己用，`CAST_TARGET` 对单位用（只能指地面的技能打在它脚下），`CAST_DIRECTION` 朝 `move`
 方向按施法距离放；矢量技能（法球、滚滚）的第二个点顺着施法方向延伸，由服务器 VM 代发，
-见 [docs/FEATURES.md](docs/FEATURES.md) 2.1、2.6。不相关的字段会被忽略。
+见 [docs/FEATURES.md](docs/FEATURES.md) 2.1、2.6。`PICKUP_RUNE` 走过去捡神符（由服务器 VM 代发），`TP` 用回城卷轴传送，
+`TALENT` 学天赋，`COURIER` 让信使把储藏处的东西送来；后两个不打断英雄手上的事，见 2.7。不相关的字段会被忽略。
 
-**info**：`action_mask`（`type` / `attack_target` / `cast_target` / `ability` 四个 0/1 数组，`ability` 按动作类型分行，
+**info**：`action_mask`（`type` / `attack_target` / `cast_target` / `ability` / `rune` / `talent` 六个 0/1 数组，`ability` 按动作类型分行，
 每个格子能用哪几种施法由 Lua 上报的施法类型决定）、`world_state`（原始
 `CMsgBotWorldState`）、`dota_time`、`reward`（各奖励分量，未加权）、`winner`、出错时 `error`；
 `action_delivery` / `skipped_observations`（动作是否被游戏执行、延迟多少、策略跳过了多少帧）。
@@ -92,9 +98,10 @@ python examples/llm_match.py --config configs/match.example.yaml --dry-run   # L
 
 | key | shape | 内容 |
 |---|---|---|
-| `heroes` | (5, 25) | 每行一个受控英雄，字段同 1v1 的 `hero` |
+| `heroes` | (5, 28) | 每行一个受控英雄，字段同 1v1 的 `hero` |
 | `abilities` | (5, 6, 3) | |
 | `items` | (5, 6, 4) | |
+| `talents` | (5, 8) | |
 | `units` | (5, 32, 16) | 每个英雄各有一张自己的邻近单位表 |
 | `unit_mask` | (5, 32) | |
 | `local_map` | (5, 3, 33, 33) | 每个英雄各以自己为中心 |
@@ -102,7 +109,8 @@ python examples/llm_match.py --config configs/match.example.yaml --dry-run   # L
 | `landmarks` | (5, 10, 4) | |
 | `team` | (11,) | 时间、双方存活人数、金钱、双方剩余塔数、双方基地血量、击杀 / 死亡 |
 
-**动作**：`type` / `move` / `target` / `ability` 四个 `MultiDiscrete([...] * 5)`，第 `i` 位驱动第 `i` 个英雄。
+**动作**：`type` / `move` / `target` / `ability` / `rune` / `talent` 六个 `MultiDiscrete([...] * 5)` 加 `point`（(5, 2) 的 `Box`），
+第 `i` 位（`point` 的第 `i` 行）驱动第 `i` 个英雄。
 行号 `i` 对应 `info["player_ids"][i]`（本方 player id 升序），一局内固定。
 
 **奖励**（`TeamReward`）：正补、反补、升级、自身血量、敌方血量（以上都对 5 人求和）、击杀、死亡、
@@ -113,16 +121,19 @@ python examples/llm_match.py --config configs/match.example.yaml --dry-run   # L
 ```python
 env = gym.make('dota2_env/AllPick5v5-v0', timescale=4)
 observation, info = env.reset()  # 选英雄 + 策略阶段，比 1v1 久，默认等 600s
-action = env.unwrapped.sample_legal_action()  # {'type': (5,), 'move': (5,), 'target': (5,), 'ability': (5,)}
+# {'type': (5,), 'move': (5,), 'target': (5,), 'ability': (5,), 'point': (5, 2), 'rune': (5,), 'talent': (5,)}
+action = env.unwrapped.sample_legal_action()
 ```
 
 **Wrappers**（`dota2_env.wrappers`）
 
 - `FlatObservationWrapper`：把 Dict 观测拍平成一个 `Box`，两个环境都能用。
 - `FlatActionWrapper`：`MultiDiscrete([type, move, target, ability])`，**只适用于 1v1**
-  （5v5 的动作空间本来就是 `MultiDiscrete`）。
-- `TextWrapper`：给 LLM 用，**只适用于 1v1**。观测是文本（单位行号与 `target` 一致，技能名、物品名和每个格子能用的施法类型来自运行中的客户端），
-  动作是 `{"type": "ATTACK", "target": 3}` 这样的 JSON；不合法的动作变成 NOOP 并写进 `info["action_error"]`。
+  （5v5 的动作空间本来就是 `MultiDiscrete`）。带不了坐标，所以只有前 7 种动作，`MOVE_TO` 及之后的都没有。
+- `TextWrapper`：给 LLM 用，**只适用于 1v1**。观测是文本（单位行号与 `target` 一致，技能名、物品名和每个格子能用的施法类型来自运行中的客户端，
+  后面跟官方中文名；另有地形、看得见的敌方英雄、各路兵线、神符点、地标几行，见 [docs/LLM_MATCH.md](docs/LLM_MATCH.md) §8），
+  动作是 `{"type": "ATTACK", "target": 3}`、`{"type": "MOVE_TO", "point": [1180, -1216]}` 这样的 JSON；
+  不合法的动作变成 NOOP 并写进 `info["action_error"]`。
   单英雄用法见 [examples/llm_agent.py](examples/llm_agent.py)（未实测，需要 `anthropic` 和 API 凭据）；
   一整队各用一个模型见下面的 LLM 对局。
   5v5 的文本观测可以直接用 `env.render()`（`render_mode="ansi"`，每个英雄一段）。
@@ -163,7 +174,7 @@ finally:
 - 每次 `reset()` 都会重启 Dota（无 GUI 约 10-20 秒）。Dota 不能设随机种子，`seed` 只影响 `env.np_random`。
 - 游戏是实时的：`step()` 写入动作后阻塞到下一帧观测，不会等你的策略。策略越慢，英雄按上一条指令执行得越久。
 - 新版客户端里，**复活后站在泉水里的英雄不会出现在 worldstate 里**，直到它移动。环境此时把英雄当作站在出生点、
-  只开放 MOVE；agent 发别的动作（包括 NOOP）时环境替它朝地图中心走一步，下一帧就恢复正常。
+  只开放 MOVE 和 MOVE_TO；agent 发别的动作（包括 NOOP）时环境替它朝地图中心走一步，下一帧就恢复正常。
 - 决定胜负的那一下（第二次死亡 / 破塔）之后客户端立刻停止推送，环境从 console.log 里读胜负。
 - 观测的地图部分读 `dota2_env/data/map.json`，它是按客户端版本从游戏文件和 bot API 导出的（6934 / 7.41f）。
   Dota 打了地图补丁就要重跑 `scripts/extract_map.py`，否则树的编号会错位；环境发现本机客户端版本和
@@ -179,18 +190,20 @@ finally:
 通义、Kimi、vLLM、Ollama 都能直接用。
 
 ```bash
-uv pip install -e ".[dev,llm]"                  # pyyaml + httpx + python-dotenv 是可选依赖，环境本身不需要
+uv pip install -e ".[dev,llm]"                  # pyyaml + httpx + python-dotenv + jinja2 是可选依赖，环境本身不需要
 cp .env.example .env                            # 填 API key；.env 已进 .gitignore
 python examples/llm_match.py --config configs/match.example.yaml --dry-run
 ```
 
 决策是异步的：每个 agent 按自己的 `decision_interval`（游戏秒）发请求，慢的模型只是决策得更少，
-不会冻住游戏。`plan_length` 让模型一次给出一句理由加一串连续动作（先 plan 再执行），一帧下发一个，
-填掉决策之间的空档。带 token / 花费计量与硬上限、all-chat 喊话、队内信息共享、JSONL 日志
-（`log_prompts` 连 prompt 一起存，方便调试）。每个键的含义、节奏语义、token 估算和已知限制见
+不会冻住游戏。`plan_length` 让模型一次给出一串连续动作（一行一个，如 `MOVE, 1180, -1216`、`ATTACK, 3`，
+最后一行是理由），一帧下发一个，填掉决策之间的空档；请求是流式的，第一行一到就下发，不等模型写完。带 token / 花费计量与硬上限、all-chat 喊话、队内信息共享、JSONL 日志
+（`log_prompts` 连 prompt 一起存，方便调试）。system 里有本英雄每个技能和天赋的官方中文说明，user 里有身上物品的说明
+（价格、合成、神秘商店）、地形、看得见的敌方英雄和各路兵线（带绝对坐标）、神符点、地标，最后是最近几条命令和下发时英雄站的位置。
+`MOVE, x, y` 下的是 `MOVE_TO`，由游戏自己寻路走到那里。每个键的含义、prompt 的组成、节奏语义、token 估算和已知限制见
 [docs/LLM_MATCH.md](docs/LLM_MATCH.md)；配置模板是 [configs/match.example.yaml](configs/match.example.yaml)。
 
-现在一队 LLM 打内置 bot；两队都是 LLM 还没接（原因见 LLM_MATCH.md §8）。
+现在一队 LLM 打内置 bot；两队都是 LLM 还没接（原因见 LLM_MATCH.md §10）。
 
 ## 结构
 
@@ -200,12 +213,14 @@ dota2_env/
   envs/allpick5v5.py DotaAllPick5v5Env（一队 5 个英雄）
   observation.py     worldstate -> numpy 观测、单位表、队伍观测
   map_features.py    map.json 的加载、每局的树表、观测的地图部分（local_map / runes / landmarks）
-  data/              map.json（地图）和 items / abilities / heroes.json（中英文技能物品文本），都由 scripts/ 生成
+  data/              map.json（地图）和 items / abilities / heroes.json（中英文技能物品文本、合成、神秘商店），都由 scripts/ 生成
+  game_text.py       读 data/ 的文本：官方中英文名、本英雄技能说明、物品说明（价格 / 合成 / 神秘商店）
   actions.py         动作空间、合法性 mask、到 bridge 动作的翻译
   rewards.py         LaningReward / Mid1v1Rules、TeamReward / AllPick5v5Rules
   text.py            文本观测（render_mode="ansi" / LLM）
   wrappers.py        Flat* / TextWrapper
-  llm/               LLM 对局：config（YAML）、gateway（OpenAI 兼容）、agent（prompt/解析）、runner（异步循环）
+  llm/               LLM 对局：config（YAML）、gateway（OpenAI 兼容）、agent（prompt/解析）、runner（异步循环）、
+                     prompts/（system / user 两条消息的 Jinja 模板，改 prompt 措辞只改这里）
   bridge/            与 Dota 通信的底层，不依赖 gymnasium
     game.py          DotaGame：会话目录、bots 软链接、启动参数、写动作/配置文件（每队 5 个英雄）
     worldstate.py    socket 读取与监听子进程
@@ -221,7 +236,7 @@ scripts/             probe_worldstate.py（新客户端兼容性探测）、prob
                      extract_map.py + map_scan.lua（导出 map.json）、fetch_game_text.py（导出中英文文本）、
                      probe_trees.py（核对 tree_id）
 docs/                FEATURES.md、PARAMETERS.md、LLM_MATCH.md、VERSION_DIFF.md、BRIDGE_ACTIONS.md、IPC_CHANNELS.md、
-                     MAP_DATA.md
+                     MAP_DATA.md、SERVER_VM.md、REFERENCES.md
 ```
 
 通信机制：Dota 以 `-botworldstatetosocket_*` 启动，在 TCP 12120/12121 上每 N tick 推送一帧
@@ -257,6 +272,8 @@ docs/                FEATURES.md、PARAMETERS.md、LLM_MATCH.md、VERSION_DIFF.m
 dotaservice 的 [NOTES.md](https://github.com/TimZaman/dotaservice/blob/master/NOTES.md)（后三者引用在哪里见 [docs/IPC_CHANNELS.md](docs/IPC_CHANNELS.md) §5）；
 [leamare/dota-interactive-map](https://github.com/leamare/dota-interactive-map)（ISC）的 7.41 数据用来人工对照
 `map.json`，没有拷贝（见 [docs/MAP_DATA.md](docs/MAP_DATA.md) §7）。
+
+同类工作（别人怎么让 LLM 实时打游戏、MOBA 上的 LLM 研究）以及和本项目的对比见 [docs/REFERENCES.md](docs/REFERENCES.md)。
 
 ## 许可证
 

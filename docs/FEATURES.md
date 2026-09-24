@@ -31,9 +31,10 @@ hp = observation['heroes'][row][H['health_frac']]  # 5v5，row 是英雄序号
 
 | key | shape | 内容 |
 |---|---|---|
-| `hero` | (25,) | 本方英雄，见 1.1 |
+| `hero` | (28,) | 本方英雄，见 1.1 |
 | `abilities` | (6, 3) | 技能槽 0-5，见 1.2 |
 | `items` | (6, 4) | 背包格 0-5，见 1.2 |
+| `talents` | (8,) | 8 个天赋学了没有，见 1.8 |
 | `units` | (32, 16) | 1600 范围内最近的 32 个单位，见 1.3 |
 | `unit_mask` | (32,) | `units` 哪些行有效 |
 | `local_map` | (3, 33, 33) | 以英雄为中心的局部地图，见 1.5 |
@@ -44,9 +45,10 @@ hp = observation['heroes'][row][H['health_frac']]  # 5v5，row 是英雄序号
 
 | key | shape | 内容 |
 |---|---|---|
-| `heroes` | (5, 25) | 每行一个受控英雄，字段同 `hero` |
+| `heroes` | (5, 28) | 每行一个受控英雄，字段同 `hero` |
 | `abilities` | (5, 6, 3) | |
 | `items` | (5, 6, 4) | |
+| `talents` | (5, 8) | |
 | `units` | (5, 32, 16) | **每个英雄各有一张自己的邻近单位表** |
 | `unit_mask` | (5, 32) | |
 | `local_map` | (5, 3, 33, 33) | 每个英雄各以自己为中心 |
@@ -57,7 +59,7 @@ hp = observation['heroes'][row][H['health_frac']]  # 5v5，row 是英雄序号
 行号 `i` 对应 `info["player_ids"][i]`，也就是本方 player id 升序的第 i 个；`hero_selection.lua` 按同样的顺序
 发英雄，所以 `gym.make(heroes=(...))` 的第 i 个英雄名就是第 i 行。行号在一局内固定不变。
 
-### 1.1 `hero`（25 维）
+### 1.1 `hero`（28 维）
 
 | i | 名称 | 取值 | 来源 |
 |---|---|---|---|
@@ -86,10 +88,13 @@ hp = observation['heroes'][row][H['health_frac']]  # 5v5，row 是英雄序号
 | 22 | `is_attacking` | 0/1 | `attack_target_handle` 存在且 ≠ `0xFFFFFFFF` |
 | 23 | `dota_time` | `dota_time / 600` | 开局 -90s，0 是第一波兵 |
 | 24 | `time_of_day` | 原值 0-1 | |
+| 25 | `tp_charges` | TP 格（物品槽 15）里回城卷轴的 `charges / 10` | 没有卷轴是 0，见 2.7 |
+| 26 | `tp_cooldown` | 它的 `min(cooldown_remaining, 100) / 10` | 5v5 开局那张带着约 100 秒冷却 |
+| 27 | `stash_items` | 储藏处（物品槽 9-14）有几件东西，原值 | 野外买的东西在这里等信使，见 2.7 |
 
 **英雄未被上报时**（新版客户端复活后站泉水不动就不出现在 worldstate 里，见 VERSION_DIFF）：
-只填 `x` / `y`（用出生点坐标）、`is_alive=1`、`dota_time`，其余全 0，动作掩码只放开 `MOVE`。
-这时发 `MOVE` 就按给的方向走；发别的（包括 `NOOP`）环境会替它朝地图中心走一步，因为英雄不动就永远不会重新上报。
+只填 `x` / `y`（用出生点坐标）、`is_alive=1`、`dota_time`，其余全 0，动作掩码只放开 `MOVE` 和 `MOVE_TO`。
+这时发 `MOVE` / `MOVE_TO` 就照给的走；发别的（包括 `NOOP`）环境会替它朝地图中心走一步，因为英雄不动就永远不会重新上报。
 实测下一帧就重新上报，之后站着不动也不会再消失。
 **英雄死亡时**：`is_alive=0`，动作掩码只剩 `NOOP`；客户端连这个英雄都不上报时整条向量为 0。
 
@@ -106,7 +111,7 @@ hp = observation['heroes'][row][H['health_frac']]  # 5v5，row 是英雄序号
 槽位到技能名的映射是版本相关的（影魔在新版就换过），运行时用
 `env.unwrapped.ability_names()` 从客户端读，不要写死。
 
-`items` 按背包格 0-5，一格一行，空格子整行为 0（背包格 6-8、储藏处、TP 格 15、中立物品格 16 不收，那里的东西用不了或要指向地点）。
+`items` 按背包格 0-5，一格一行，空格子整行为 0（背包格 6-8、储藏处、TP 格 15、中立物品格 16 不收：那里的东西用不了，回城卷轴和储藏处另有 `hero` 里的三位和 `TP` / `COURIER` 两个动作）。
 
 | i | 名称 | 取值 |
 |---|---|---|
@@ -194,7 +199,7 @@ worldstate 里物品只有 id。技能和物品的名字、能怎么施放由 Lu
 | 0 | `rel_x` | `(spot.x - hero.x) / 8192` |
 | 1 | `rel_y` | `(spot.y - hero.y) / 8192` |
 | 2 | `distance` | 上两位的欧氏长度 |
-| 3 | `available` | worldstate `rune_infos` 里这个点的状态是 AVAILABLE；**受视野限制**，看不到时状态是 UNKNOWN，这一位为 0 |
+| 3 | `available` | worldstate `rune_infos` 里这个点的状态是 AVAILABLE。**不需要视野**：刷新那一刻四个点会一起变成 1，本队没人在附近也一样；本队有人看到那里是空的才变回 0（[MAP_DATA.md](MAP_DATA.md) §4.6）。所以 1 的意思是“这一轮刷过、还没看到被拿走”，不保证真有符 |
 
 ### 1.7 `landmarks`（10×4）
 
@@ -209,6 +214,10 @@ worldstate 里物品只有 id。技能和物品的名字、能怎么施放由 Lu
 
 肉山现在在哪个坑、魔方现在在哪一侧会随时间变（7.41：肉山开局在上坑，15:00 起昼夜交替时换坑），观测里只有两个位置。
 
+### 1.8 `talents`（8）
+
+英雄的 8 个天赋学了没有（0/1），顺序是 `heroes.json` 里的 `talents`，也就是客户端的技能槽顺序（影魔是槽 7-14），第 `i` 位就是动作 `TALENT` 的 `talent = i`。第 `2k`、`2k+1` 两个是第 `k` 层，10 / 15 / 20 / 25 级开放（`observation.TALENT_LEVELS`）。天赋由 `observation.hero_talents()` 按技能 id 从 worldstate 的 `abilities` 里认出来，游戏数据里没有的英雄整行为 0。
+
 ## 2. 动作
 
 ### 2.1 动作类型
@@ -216,37 +225,71 @@ worldstate 里物品只有 id。技能和物品的名字、能怎么施放由 Lu
 | 值 | `ActionType` | 用到的字段 |
 |---|---|---|
 | 0 | `NOOP` | — |
-| 1 | `MOVE` | `move`：16 方向（0=东，逆时针），每次朝该方向 300 距离下一个 `MOVE_DIRECTLY` |
+| 1 | `MOVE` | `move`：16 方向（0=东，逆时针），每次朝该方向 300 距离下一个 `MOVE_TO_POSITION` |
 | 2 | `ATTACK` | `target`：`units` 表行号 |
 | 3 | `CAST` | `ability`：无目标，或对自己用（友方单位技能、药水；吃树找最近的树；物品指向地点的放脚下） |
 | 4 | `CAST_TARGET` | `ability` + `target`：对 `units` 表里的单位用；只能指地面的技能打在这个单位脚下，矢量技能从我方英雄穿过它继续往前 |
 | 5 | `STOP` | — |
 | 6 | `CAST_DIRECTION` | `ability` + `move`：朝 16 方向之一、按这个技能的 `cast_range` 放到地面上；矢量施法的技能（法球、滚滚）第二个点沿同一方向继续（见 2.6） |
+| 7 | `MOVE_TO` | `point`：地图上的世界坐标 (x, y)，原样交给客户端下 `MOVE_TO_POSITION`，一路由客户端寻路走过去；超出地图的点先拉回地图边界 |
+| 8 | `PICKUP_RUNE` | `rune`：`runes` 表的行号，英雄走过去捡起那个点上的神符（2.7） |
+| 9 | `TP` | `point`：用 TP 格里的回城卷轴往那里传送，超出地图的点同样先拉回（2.7） |
+| 10 | `TALENT` | `talent`：`talents` 的下标，学这个天赋；不碰英雄手上正在做的事（2.7） |
+| 11 | `COURIER` | — ：信使从储藏处取回物品、运送给英雄；不碰英雄手上正在做的事（2.7） |
 
 `ability` 0-5 是技能槽，6-11 是背包格 0-5。每个格子能用哪几种施法由掩码给出（见 2.3、2.6）。
-无关字段会被忽略。`MOVE_DIRECTLY` 是直线移动，不绕障碍，长距离寻路要自己打点。
-英雄活着但没被上报时，`MOVE` 以外的动作都会被换成朝地图中心走一步（见 1.1）。
+`rune` 和 `talent` 各是一个下标，行号规则和 `target` 一样：`runes` 表 / `talents` 观测的第 `i` 行就是 `i`。
+无关字段会被忽略，所以不用 `MOVE_TO` 的调用方可以不带 `point`。`MOVE` 下的是 `MOVE_TO_POSITION`，走客户端自己的寻路，
+会绕开树和悬崖（2026-09 之前下的是 `MOVE_DIRECTLY`，直线走、撞上障碍就卡住）。但一步只有 300，寻路也只在这 300 里绕：
+要去的方向上横着一堵墙，英雄就一直原地不动（LLM 对局里冰女在自家基地边这样卡了两分多钟）。去远处用 `MOVE_TO`，
+终点直接交给客户端，整条路都由它规划。
+英雄活着但没被上报时，`MOVE` / `MOVE_TO` 以外的动作都会被换成朝地图中心走一步（见 1.1）。
+
+`NOOP` 和 `STOP` 不是一回事。`NOOP` 什么命令都不下（`DOTA_UNIT_ORDER_NONE` 只画个圈，不碰命令队列，
+[VERSION_DIFF.md](VERSION_DIFF.md) 3.1），英雄接着做手上的事；`STOP` 是 `Action_ClearActions(true)`，清空队列并停下。
+其余动作用 `Action_*` 下发，同样替换整个队列，所以还没打出去的攻击、还没放完的持续施法，会被之后任何一个非 `NOOP`
+的动作打断，包括 `STOP`（说明里写着可以在持续施法时施放的物品不会打断持续施法）。`TALENT` 和 `COURIER` 走的是
+`ActionImmediate_*`，不碰队列，和 `NOOP` 一样不打断。`ATTACK` 下发时 `once: true`，一条只打一下，
+走进射程、转身、抬手都在这一下里，想让它打出去，后面就发 `NOOP`。
 
 ### 2.2 空间
 
 ```python
-action_space = Dict(type=Discrete(7), move=Discrete(16), target=Discrete(32), ability=Discrete(12))
-team_action_space = Dict(type=MultiDiscrete([7] * 5), move=..., target=..., ability=...)  # 每个 key 一个 (5,) 数组
+action_space = Dict(
+    type=Discrete(12),
+    move=Discrete(16),
+    target=Discrete(32),
+    ability=Discrete(12),
+    point=Box(-inf, inf, (2,), float32),
+    rune=Discrete(4),
+    talent=Discrete(8),
+)
+# point 是 (5, 2)，其余每个 key 一个 (5,) 数组
+team_action_space = Dict(
+    type=MultiDiscrete([12] * 5),
+    move=...,
+    target=...,
+    ability=...,
+    point=Box(-inf, inf, (5, 2), float32),
+    rune=MultiDiscrete([4] * 5),
+    talent=MultiDiscrete([8] * 5),
+)
 ```
 
-5v5 每个 key 是长度 5 的数组，第 `i` 位驱动第 `i` 个英雄。`actions.hero_action(action, i)` 把第 i 列
-取出来变成单英雄动作字典。
+5v5 每个 key 的第 `i` 位（`point` 是第 `i` 行）驱动第 `i` 个英雄。`actions.hero_action(action, i)` 把第 i 列
+取出来变成单英雄动作字典。`point` 和观测里的各个 Box 一样不设上下界，地图的边界在 `load_map().world_bounds`。
+`FlatActionWrapper` 的 `MultiDiscrete` 带不了坐标，所以它的 `type` 只有前 7 种：`MOVE_TO` 和它之后的 `PICKUP_RUNE`、`TP`、`TALENT`、`COURIER` 都不含，从 `MOVE_TO` 截断才能让前 7 种的编号不变。
 
 ### 2.3 合法性掩码 `info["action_mask"]`
 
-1v1 是 `type` (7,) / `attack_target` (32,) / `cast_target` (32,) / `ability` (7, 12)，5v5 全部前面多一维 (5, …)。
+1v1 是 `type` (12,) / `attack_target` (32,) / `cast_target` (32,) / `ability` (12, 12) / `rune` (4,) / `talent` (8,)，5v5 全部前面多一维 (5, …)。
 `ability` 按动作类型分行：`ability[t]` 是动作类型 `t` 能用的格子，只有 `CAST` / `CAST_TARGET` / `CAST_DIRECTION`
 三行会有 1，其余行全 0。RL 里先采样 `type`、再用 `ability[type]` 遮 `ability` 那一头就行。
 
 | 掩码位 | 条件 |
 |---|---|
 | `NOOP` | 永远合法 |
-| `MOVE` | 能行动（没被晕 / 妖术 / 噩梦）且没被缠绕；英雄"活着但没被上报"时只有它合法 |
+| `MOVE` / `MOVE_TO` | 能行动（没被晕 / 妖术 / 噩梦）且没被缠绕；英雄"活着但没被上报"时只有这两个合法 |
 | `STOP` | 能行动 |
 | `ATTACK` | 能行动、没被缴械，且至少有一个 `attack_target` |
 | `CAST` / `CAST_DIRECTION` | 能行动，且 `ability[该类型]` 里至少有一位是 1 |
@@ -254,6 +297,12 @@ team_action_space = Dict(type=MultiDiscrete([7] * 5), move=..., target=..., abil
 | `attack_target[i]` | 敌方单位：非物理免疫且非无敌；**己方**单位：非英雄非塔且血量 < 50%（反补） |
 | `cast_target[i]` | 敌方单位：非魔法免疫且非无敌 |
 | `ability[t][s]` | 格子 s 现在可用，且它的施法类型（2.6）允许动作类型 t |
+| `PICKUP_RUNE` | 能行动、没被缠绕，且至少有一个 `rune` |
+| `rune[i]` | `runes` 第 i 行的 `available` 是 1（这一轮刷过、本队还没看到被拿走，不保证真有符） |
+| `TP` | 能行动、没被缠绕（缠绕会打断传送）、没被缄默，TP 格里有卷轴且 `is_fully_castable`（没在冷却、蓝够） |
+| `TALENT` | 至少有一个 `talent`；**死了、被晕、被沉默也合法**，加点不受这些影响 |
+| `talent[i]` | 英雄有技能点，等级够这一层，而且这一层两个天赋一个都还没学（1.8） |
+| `COURIER` | 储藏处有东西，而且自己的信使活着 |
 
 "现在可用"：技能是等级 > 0、`is_fully_castable`、英雄没被沉默；物品是格子里有东西、`is_fully_castable`、
 英雄没被缄默（沉默不影响物品）。施法类型到动作类型：
@@ -269,13 +318,15 @@ team_action_space = Dict(type=MultiDiscrete([7] * 5), move=..., target=..., abil
 
 Lua 还没上报过的格子（开局头几帧、刚买的物品）算不可用。
 
-英雄死亡时只剩 `NOOP`。`env.unwrapped.sample_legal_action()` 按掩码均匀采样，可当 baseline。
+英雄死亡时只剩 `NOOP`（和 `TALENT`）。`env.unwrapped.sample_legal_action()` 按掩码均匀采样，可当 baseline。
 
 ### 2.4 自动购买 / 加点
 
-两个环境都会在第一步给每个受控英雄买 `starting_items`，并在 `ability_points > 0` 时按
+两个环境都会在第一步给每个受控英雄买 `starting_items`，并在有技能点时按
 `ability_priority`（默认 `(5, 0, 3, 4, 1, 2)`，先大招）逐个槽位尝试加点，Lua 跳过当前不能升的。
+**天赋不自动加**：英雄每到一层还没选的天赋层，自动加点就给它留一个技能点（加点动作带 `keep`，Lua 只在技能点多于 `keep` 时才加），等 agent 用 `TALENT` 自己选。
 传 `()` 关闭，改用 `queue_purchase()` / `queue_train_ability()`（5v5 的两个方法第一个参数是英雄行号）。
+`restock_tp=True`（默认）时，英雄身上、储藏处、信使身上都没有回城卷轴、金钱又够 100 时，环境替它买一张（2.7）。
 同一条通道上还有 `queue_chat(message)`（5v5 是 `queue_chat(row, message)`），下一步在 all-chat 里说一句话；
 Lua 会执行 `extra_actions` 里的每一条，所以喊话不占英雄的主动作。
 ⚠️ 受控方的内置买装 AI 是关掉的，5v5 全程只有出门装，装备这条线要自己接。
@@ -321,6 +372,35 @@ worldstate 里没有技能 / 物品的施法方式。Lua 每帧看一遍 0-5 号
 会带 `(vector: runs on past the target / along the direction)`，LLM 的 system prompt 也解释了这一点。
 打在目标脚下没有提前量，移动中的英雄可能躲开。同一技能还在转身 / 抬手时再下一次施法会被客户端忽略，
 所以连续两帧对同一技能换目标，第二次不生效。
+
+### 2.7 回城卷轴、神符、天赋、信使（2026-09 实测，ClientVersion 6937）
+
+四个动作都在 5v5 里用 gym 动作跑通过（服务器 VM 只负责摆场景：刷新冷却、把英雄挪到神符点旁、升到 10 级），
+客户端上的实测细节见 [VERSION_DIFF.md](VERSION_DIFF.md) 3.2。
+
+**`TP`**：下发的是 `DOTA_UNIT_ORDER_CAST_POSITION`，`abilitySlot = -16`（物品槽 15），Lua 的 `Action_UseAbilityOnLocation`
+原样施放。持续施法 3 秒，期间任何非 `NOOP` 动作都会打断它。落点：`point` 离某座友方建筑不超过 800 就正好落在 `point`；
+更远就落在离 `point` 最近的友方建筑朝 `point` 方向 800 处（对地图中心 (0, 0) 施放，落在中路一塔外 800）。
+接连传到同一座建筑时施法时间会变长。卷轴冷却 80 秒、耗蓝 75，这些都在 `is_fully_castable` 里。
+
+**补买**：`restock_tp` 开着时，`actions.upkeep()` 每步检查英雄的物品（任何格子）和信使身上的物品，一张卷轴都没有就买一张。
+在泉水附近买的直接进 TP 格；在别处买的进储藏处（物品槽 9），英雄回到泉水时会自动挪进 TP 格，或者用 `COURIER` 送过来。
+信使运送途中卷轴在信使的 `items` 里，所以不会重复买。
+
+**`COURIER`**：`ACTION_COURIER`，Lua 调 `ActionImmediate_Courier(自己的信使, COURIER_ACTION_TAKE_AND_TRANSFER_ITEMS)`：
+信使从储藏处取回物品，飞到英雄身边放进去，然后自己飞回泉水。实测从泉水送到中路河道约 24 秒。
+它不占英雄的动作队列，所以英雄接着做手上的事，和 `NOOP` 一样。
+
+**`PICKUP_RUNE`**：`DOTA_UNIT_ORDER_PICKUP_RUNE`，带的是神符点的坐标（`map.json` 的 `runes`）。bot 只清空自己的动作队列，
+真正的指令由服务器 VM 的 `bridge/lua/server_actions.lua` 发：在那个点 400 以内找最近的神符实体，用
+`ExecuteOrderFromTable(PICKUP_RUNE, 那个实体)` 让英雄走过去捡。因为 bot API 的 `Action_PickUpRune(RUNE_POWERUP_2)`
+在 6937 上不可用：0:00 下这条指令英雄原地不动，2:00 下则跑向**另一个**强化神符点；其余三个点的编号正常。
+神符点上可能同时有两个神符（0:00 没人捡的赏金神符会一直留在强化神符点，2:00 的圣水神符刷在它旁边），
+一次捡最近的一个，再发一次捡另一个。
+
+**`TALENT`**：下发的是一条 `DOTA_UNIT_ORDER_TRAIN_ABILITY`（天赋名）主动作，所以死了、被晕也能学，也不打断手上的事。
+Lua 的 `CanAbilityBeUpgraded()` 对天赋不可靠：10 级时 8 个天赋全说能升，`GetHeroLevelRequiredToUpgrade()` 全说 10，
+但引擎会默默拒绝没到等级的层和已经选过的层，所以掩码按 `TALENT_LEVELS` 和"同层两个"在 Python 里算。
 
 ## 3. 奖励
 
@@ -376,4 +456,5 @@ worldstate，所以真正的胜负是从 console.log 的 `Building: npc_dota_*_f
 
 观测里还没有：modifier、投射物、符文的种类（只有点位上有没有符）、肉山 / 魔方当前在哪、临时树、信使、
 经验值（只有等级）、敌方金钱、背包格 6-8 和储藏处。
-动作里还没有：对队友施法（对自己可以用 `CAST`）、信使、买活、TP；矢量施法的第二个点实测给不了（2.6）。5v5 另外还缺：小地图级的全局单位表（现在每个英雄只看自己周围 1600）、按英雄的奖励拆分。
+动作里还没有：对队友施法（对自己可以用 `CAST`）、买活、买东西（出门装和回城卷轴以外）、中立物品、信使送货以外的信使指令；矢量施法的第二个点实测给不了（2.6）。5v5 另外还缺：数值观测里小地图级的全局单位表（现在每个英雄只看自己周围 1600；文本观测已经有看得见的敌方英雄和
+各路兵线两行，见 [LLM_MATCH.md](LLM_MATCH.md) §8）、按英雄的奖励拆分。

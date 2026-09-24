@@ -1,4 +1,4 @@
-"""Launching the Dota 2 client and the file-based Python -> Lua channel."""
+"""Launching the Dota 2 client, the file-based Python -> Lua channel, and reading the client's own files."""
 
 import contextlib
 import glob
@@ -35,6 +35,42 @@ def get_default_game_path():
     """`DOTA_GAME_PATH` env var, falling back to the default Steam library location."""
     key = 'linux' if platform.startswith('linux') else platform
     return os.path.expanduser(os.getenv('DOTA_GAME_PATH', DEFAULT_GAME_PATHS[key]))
+
+
+def read_vpk(path: str, prefixes: tuple[str, ...]) -> dict[str, bytes]:
+    """Every file of a version 2 VPK (dota.vpk, pak01_dir.vpk) whose path starts with one of prefixes.
+
+    The directory is a tree of extension / directory / name strings; a file's data follows the tree
+    when its archive index is 0x7FFF and is in the numbered archive beside it otherwise (pak01_007.vpk).
+    """
+    with open(path, 'rb') as handle:
+        signature, version, tree_size = struct.unpack('<III', handle.read(12))
+        if (signature, version) != (0x55AA1234, 2):
+            raise ValueError(f'{path} is not a version 2 VPK')
+        handle.read(16)
+        tree = handle.read(tree_size)
+    position = 0
+
+    def read_string() -> str:
+        nonlocal position
+        end = tree.index(b'\0', position)
+        text, position = tree[position:end].decode(), end + 1
+        return text
+
+    files = {}
+    while extension := read_string():
+        while directory := read_string():
+            while name := read_string():
+                _, preload, archive, offset, length, _ = struct.unpack_from('<IHHIIH', tree, position)
+                data, position = tree[position + 18 : position + 18 + preload], position + 18 + preload
+                file_path = f'{directory}/{name}.{extension}'
+                if not file_path.startswith(prefixes):
+                    continue
+                archive_path = path if archive == 0x7FFF else path.replace('_dir.vpk', f'_{archive:03d}.vpk')
+                with open(archive_path, 'rb') as handle:
+                    handle.seek(28 + tree_size + offset if archive == 0x7FFF else offset)
+                    files[file_path] = data + handle.read(length)
+    return files
 
 
 class DotaGame:

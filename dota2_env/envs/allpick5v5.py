@@ -67,6 +67,7 @@ class DotaAllPick5v5Env(gym.Env):
         rules=None,
         starting_items=DEFAULT_STARTING_ITEMS,
         ability_priority=DEFAULT_ABILITY_PRIORITY,
+        restock_tp=True,
         step_timeout=20.0,
         replay_dir=None,
         keep_files=False,
@@ -79,7 +80,10 @@ class DotaAllPick5v5Env(gym.Env):
         heroes / opponent_heroes: five hero unit names each, handed out in player-id order.
         opponent:    "builtin" (Valve's default bot AI) or "idle".
         starting_items / ability_priority: bought / levelled automatically for every hero; pass () to
-                     do it yourself through queue_purchase and queue_train_ability.
+                     do it yourself through queue_purchase and queue_train_ability. A skill point per
+                     talent tier a hero has reached is kept back for the agent's TALENT action.
+        restock_tp:  buy a Town Portal Scroll whenever a hero has none left; away from the shop it waits
+                     in the stash for the COURIER action.
         step_timeout: seconds without a new world state before the episode is truncated with info["error"].
         replay_dir:  record the match and move the .dem there on close(), e.g. "replays";
                      a relative path lands under the current working directory. None records nothing.
@@ -98,6 +102,7 @@ class DotaAllPick5v5Env(gym.Env):
         self.rules = rules or AllPick5v5Rules()
         self.starting_items = tuple(starting_items)
         self.ability_priority = tuple(ability_priority)
+        self.restock_tp = restock_tp
         self._session_factory = session_factory
         self._session_kwargs = {
             'team_id': team_id,
@@ -171,9 +176,9 @@ class DotaAllPick5v5Env(gym.Env):
         extra_actions += delivery.lost_extra_actions
         delivery.lost_extra_actions = []
         for row, player_id in enumerate(self._player_ids):
-            hero = self._observation.heroes[row].hero
-            if hero is not None and hero.ability_points > 0:
-                extra_actions += [actions.train_ability(player_id, f'slot:{slot}') for slot in self.ability_priority]
+            hero, courier = self._observation.heroes[row].hero, self._observation.heroes[row].courier
+            if hero is not None:
+                extra_actions += actions.upkeep(player_id, hero, courier, self.ability_priority, self.restock_tp)
         self._session.act(self._world_state.dota_time, bridge_actions, extra_actions)
 
         previous = self._world_state
@@ -209,7 +214,7 @@ class DotaAllPick5v5Env(gym.Env):
 
     def render(self):
         if self.render_mode == 'ansi' and self._world_state is not None:
-            return describe_team(self._world_state, self.team_id, self._player_ids, self.cast_slots())
+            return describe_team(self._world_state, self.team_id, self._player_ids, self.cast_slots(), self.trees)
         return None
 
     def close(self):
@@ -231,6 +236,13 @@ class DotaAllPick5v5Env(gym.Env):
     def queue_chat(self, row, message, all_chat=True):
         """Have hero row say message with the next step; all_chat False keeps it inside the team."""
         self._pending_extra_actions.append(actions.chat(self._player_ids[row], message, all_chat))
+
+    def queue_label(self, row: int, text: str) -> None:
+        """Show text over hero row's health bar from the next step on, until another label replaces it.
+
+        Only a game window (render_mode "human") shows it; see docs/SERVER_VM.md.
+        """
+        self._pending_extra_actions.append(actions.label(self._player_ids[row], text))
 
     def ability_names(self):
         """{player_id: {slot: ability name}} as reported by the running client (empty until lua has started)."""

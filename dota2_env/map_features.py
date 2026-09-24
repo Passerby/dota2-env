@@ -56,8 +56,12 @@ class StaticMap:
     height: np.ndarray  # float32 terrain step per cell, higher is higher; the padding repeats the map edge
     tree_counts: np.ndarray  # int16, trees covering each cell at the start of a match
     tree_cells: np.ndarray  # (trees, 4, 2) padded (row, col) of the four cells each tree covers
+    tree_positions: np.ndarray  # (trees, 2) x, y
     runes: np.ndarray  # (len(RUNE_SPOTS), 2) x, y
     landmarks: np.ndarray  # (len(LANDMARKS), 2) x, y
+    buildings: tuple[tuple[str, int, float, float], ...]  # name, team, x, y as the match starts
+    lanes: dict[str, np.ndarray]  # top / mid / bot: (21, 2) x, y along the lane, from the Radiant fountain on
+    world_bounds: tuple[float, float, float, float]  # min x, min y, max x, max y a unit can be ordered to
 
     def cell(self, x: float, y: float) -> tuple[int, int]:
         """Padded (row, col) of the cell holding world point x, y."""
@@ -91,7 +95,10 @@ def load_map(path: str = MAP_PATH) -> StaticMap:
 
     runes = np.array([data['runes'][name][:2] for name in RUNE_SPOTS], np.float32)
     landmarks = np.array([data['landmarks'][name][:2] for name in LANDMARKS], np.float32)
-    for array in (blocked, height, tree_counts, tree_cells, runes, landmarks):
+    tree_positions = trees[:, 1:3].astype(np.float32)
+    lanes = {name: np.array(points, np.float32) for name, points in data['lanes'].items()}
+    min_x, min_y, max_x, max_y = (float(bound) for bound in data['world_bounds'])
+    for array in (blocked, height, tree_counts, tree_cells, tree_positions, runes, landmarks, *lanes.values()):
         array.setflags(write=False)
     return StaticMap(
         client_version=data['client_version'],
@@ -102,8 +109,14 @@ def load_map(path: str = MAP_PATH) -> StaticMap:
         height=height,
         tree_counts=tree_counts,
         tree_cells=tree_cells,
+        tree_positions=tree_positions,
         runes=runes,
         landmarks=landmarks,
+        buildings=tuple(
+            (building['name'], building['team'], building['x'], building['y']) for building in data['buildings']
+        ),
+        lanes=lanes,
+        world_bounds=(min_x, min_y, max_x, max_y),
     )
 
 

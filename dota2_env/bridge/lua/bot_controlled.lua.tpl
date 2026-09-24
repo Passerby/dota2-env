@@ -40,7 +40,7 @@ local function act(action)
     elseif action.actionType == "DOTA_UNIT_ORDER_ATTACK_TARGET" then
         tblActions[action.actionType] = {{action.attackTarget.target}, {action.attackTarget.once}, {0}}
     elseif action.actionType == "DOTA_UNIT_ORDER_TRAIN_ABILITY" then
-        tblActions[action.actionType] = {{action.trainAbility.ability}}
+        tblActions[action.actionType] = {{action.trainAbility.ability}, {action.trainAbility.keep}}
     elseif action.actionType == "DOTA_UNIT_ORDER_GLYPH" then
         tblActions[action.actionType] = {}
     elseif action.actionType == "DOTA_UNIT_ORDER_STOP" then
@@ -66,7 +66,8 @@ local function act(action)
     elseif action.actionType == "ACTION_COURIER" then
         tblActions[action.actionType] = {{action.courier.action}}
     elseif action.actionType == "DOTA_UNIT_ORDER_PICKUP_RUNE" then
-        tblActions[action.actionType] = {{action.pickUpRune.rune}, {0}}
+        -- the server VM (server_actions.lua) picks the rune up
+        tblActions[action.actionType] = {}
     elseif action.actionType == "DOTA_UNIT_ORDER_PICKUP_ITEM" then
         tblActions[action.actionType] = {{action.pickUpItem.itemId}, {0}}
     elseif action.actionType == "DOTA_UNIT_ORDER_DROP_ITEM" then
@@ -111,10 +112,10 @@ local function get_new_action(dota_time, player_id, latest_action_time, step)
 
     local delay = DotaTime() - data.dotaTime
 
-    -- such as chat, train ability
+    -- such as chat, train ability; ACTION_LABEL is drawn by the server VM (server_actions.lua)
     if data.extra_actions ~= nil and data.extra_actions.actions ~= nil  then
         for _, action in pairs(data.extra_actions.actions) do
-            if action.player == player_id then
+            if action.player == player_id and action.actionType ~= "ACTION_LABEL" then
                 act(action)
             end
         end

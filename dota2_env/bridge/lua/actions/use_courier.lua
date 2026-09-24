@@ -9,28 +9,19 @@ local UseCourier = {}
 UseCourier.Name = "Use Courier Action"
 UseCourier.NumArgs = 2
 
-function UseCourier:Call(bot, actionType)
-    if GetNumCouriers() == 0 then return end
+-- sAction names a COURIER_ACTION_* constant, such as COURIER_ACTION_TAKE_AND_TRANSFER_ITEMS: fetch the stash,
+-- carry it to the hero, then fly home (measured on 6937, docs/VERSION_DIFF.md 3.2).
+function UseCourier:Call(bot, sAction)
     if bot:IsIllusion() then return end
-    local courier = nil
-    for i = 0, GetNumCouriers() do
-        local t = GetCourier(i)
-        if bot:GetPlayerID() == t:GetPlayerID() then
-            courier = t
-            break
+    for i = 0, GetNumCouriers() - 1 do
+        local courier = GetCourier(i)
+        if courier:GetPlayerID() == bot:GetPlayerID() then
+            if GetCourierState(courier) ~= COURIER_STATE_DEAD then
+                bot:ActionImmediate_Courier(courier, _G[sAction[1]])
+            end
+            return
         end
     end
-
-    if courier == nil then return end
-
-    local state = GetCourierState(courier)
-
-    if state == COURIER_STATE_DEAD or courier:GetHealth() < 1 then
-        return
-    else
-        bot:ActionImmediate_Courier(courier, actionType[1])
-    end
-
 end
 
 return UseCourier

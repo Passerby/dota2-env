@@ -5,11 +5,14 @@
 local LevelAbility = {}
 
 LevelAbility.Name = "Level Ability"
-LevelAbility.NumArgs = 2
+LevelAbility.NumArgs = 3
 
 -------------------------------------------------
 
-function LevelAbility:Call( hHero, sAbilityName )
+-- nKeep: points to leave unspent, which python keeps back for the talents the agent picks itself. The
+-- client silently refuses a talent of a tier the hero has not reached or has already chosen from, although
+-- CanAbilityBeUpgraded says yes (docs/VERSION_DIFF.md 3.2), so python checks the tiers.
+function LevelAbility:Call( hHero, sAbilityName, nKeep )
     -- "slot:N" levels whatever ability sits in slot N
     local slot = string.match(sAbilityName[1], "^slot:(%d+)$")
     if slot ~= nil then
@@ -23,7 +26,7 @@ function LevelAbility:Call( hHero, sAbilityName )
     print("Leveling: ", sAbilityName[1])
     -- Sanity Check
     local nAbilityPoints = hHero:GetAbilityPoints()
-    if nAbilityPoints > 0 then
+    if nAbilityPoints > (nKeep[1] or 0) then
         -- Another sanity check
         local hAbility = hHero:GetAbilityByName(sAbilityName[1])
         if hAbility and hAbility:CanAbilityBeUpgraded() then

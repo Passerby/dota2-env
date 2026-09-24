@@ -73,6 +73,7 @@ exec）加载进服务器 VM，用 `loadfile('bots/actions_t<team>')` 每 tick �
 静默丢掉，cfg 是唯一能无界面自动加载服务器 Lua 的办法。有了它，控制台命令也能自动跑：cfg 里的行在服务器激活时
 执行，脚本里 `SendToServerConsole(...)` 随时执行（GUI 模式的 `jointeam spec` 就是这么发的）；`SendToConsole`
 （客户端控制台）对脚本源有 FCVAR 限制，`jointeam` 这类命令过不了（[VERSION_DIFF.md](VERSION_DIFF.md) 1.3）。
+服务器 VM 在普通对局里还能做的事（聊天、游戏事件、场景搭建、暂停、头顶文字）和它的完整 API 见 [SERVER_VM.md](SERVER_VM.md)。
 
 ## 3. 其它候选通道
 
@@ -95,6 +96,8 @@ exec）加载进服务器 VM，用 `loadfile('bots/actions_t<team>')` 每 tick �
    `DebugPause called with 1 arguments - expected 0`）确实能暂停
    （日志 `CDOTAGameRules:Pause = true PlayerId=-1 fUnpauseDelay=3.00`），但**暂停后 Think() 就不再被调用**，
    Lua 自己解不了暂停 ✅ —— 单向陷阱，不能用来做锁步。能不能从 `-dedicated` 的 stdin 发控制台命令解暂停，未验证 ⚠️。
+   **服务器 VM 能解**（2026-09-23 实测）：`PauseGame(true)` 之后，`SetContextThink` 注册、返回 0 的 thinker 照样每帧跑，
+   它调 `PauseGame(false)` 约 30 ms 就恢复，所以锁步可以不自旋（[SERVER_VM.md](SERVER_VM.md) §4）。
 2. 多实例并行：瓶颈是全局的 `vscripts/bots` 软链接、固定端口和 `pkill dota2`，和用哪种通道无关。
 
 ## 5. 参考

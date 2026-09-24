@@ -43,16 +43,27 @@ def main():
 
     median, p90, worst = quantiles([record['latency'] for record in decisions])
     print(f'\nlatency  median {median:.2f}s  p90 {p90:.2f}s  worst {worst:.2f}s')
+    first_lines = [record['first_line_latency'] for record in decisions if record.get('first_line_latency') is not None]
+    if first_lines:
+        median, p90, worst = quantiles(first_lines)
+        print(
+            f'latency to the first line, when a hero can act  median {median:.2f}s  p90 {p90:.2f}s  worst {worst:.2f}s'
+        )
     lag = [record['dota_time'] - record['decided_at'] for record in decisions if 'decided_at' in record]
     if lag:
         median, p90, worst = quantiles(lag)
-        print(f'staleness of an order when it goes out  median {median:.1f}s  p90 {p90:.1f}s  worst {worst:.1f}s')
+        print(f'staleness when the whole reply is in  median {median:.1f}s  p90 {p90:.1f}s  worst {worst:.1f}s')
 
     plans = [record['plan'] for record in decisions if record.get('plan')]
     if plans:
         lengths = collections.Counter(len(plan) for plan in plans)
         print(f'\nplan length  {dict(sorted(lengths.items()))}')
-        kinds = collections.Counter(str(step.get('type', '?')).upper() for plan in plans for step in plan)
+        # Note (ruidu): a step is the line the model wrote; transcripts from before replies streamed hold JSON objects.
+        kinds = collections.Counter(
+            (step.split(',')[0] if isinstance(step, str) else str(step.get('type', '?'))).strip().upper()
+            for plan in plans
+            for step in plan
+        )
         total = sum(kinds.values())
         print('planned actions  ' + '  '.join(f'{name} {100 * n / total:.0f}%' for name, n in kinds.most_common()))
         varied = sum(1 for plan in plans if len({json.dumps(step, sort_keys=True) for step in plan}) > 1)
@@ -70,7 +81,7 @@ def main():
         for reason in reasons[::step][: args.reasons]:
             print(f'  {reason}')
     else:
-        print('\nno reasons in this transcript (plan_length 1, or the model ignored the field)')
+        print('\nno reasons in this transcript (the model never wrote a REASON line)')
 
     said = [record['say'] for record in decisions if record.get('say')]
     print(f'\ntaunts sent: {len(said)}' + (f'  e.g. {said[0]!r}' if said else ''))

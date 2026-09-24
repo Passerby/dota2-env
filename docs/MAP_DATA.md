@@ -10,12 +10,12 @@
 | 文件 | 内容 | 生成脚本 |
 |---|---|---|
 | `dota2_env/data/map.json` | gridnav、高度级、树（带 tree_id）、神符点、地标、建筑、商店、野怪营地、Watcher、兵线、世界边界 | `extract_map.py` |
-| `dota2_env/data/items.json` | 物品：价格、配方、冷却、蓝耗、数值，中英文名称 / 说明 / 备注 | `fetch_game_text.py` |
-| `dota2_env/data/abilities.json` | 技能与天赋：冷却、蓝耗、施法距离、数值，中英文名称 / 说明 / 备注 / 碎片 / 神杖 | `fetch_game_text.py` |
-| `dota2_env/data/heroes.json` | 英雄：技能列表、天赋列表，中英文名 | `fetch_game_text.py` |
+| `dota2_env/data/items.json` | 物品：价格、能否购买、合成配方、是否神秘商店有售、冷却、蓝耗、数值，中英文名称 / 说明 / 备注 | `fetch_game_text.py` |
+| `dota2_env/data/abilities.json` | 技能与天赋：被动 / 先天 / 需要神杖或魔晶、冷却、蓝耗、施法距离、数值，中英文名称 / 说明 / 备注 / 魔晶 / 神杖 | `fetch_game_text.py` |
+| `dota2_env/data/heroes.json` | 英雄：按技能栏顺序的技能、天赋，中英文名 | `fetch_game_text.py` |
 
 `map.json` 由观测的地图部分（`dota2_env/map_features.py`，见 [FEATURES.md](FEATURES.md)）读取；
-文本三件套目前只是快照，包里还没有代码读它们。
+文本三件套由 `dota2_env/game_text.py` 读取，拼进文本状态（`text.py`）和 LLM 对局的 prompt（[LLM_MATCH.md](LLM_MATCH.md) §8）。
 
 ## 1. 每个字段从哪来
 
@@ -42,9 +42,20 @@
 `Source2Viewer-CLI`（MIT）解出文本再解析。它只在提取时用，不随仓库分发。
 
 中英文文本来自 dota2.com 官网自己用的 datafeed（`/datafeed/{itemlist,itemdata,abilitylist,abilitydata,herolist,herodata,patchnoteslist}?language=english|schinese`）。
-这是**非公开接口**，没有文档、可能会变；如果哪天不能用了，本机 `pak01_dir.vpk` 里的
-`scripts/npc/*.txt` 和 `resource/localization/*_{english,schinese}.txt`（dotabuff/d2vpkr 按客户端版本同步）
-是离线替代，但要自己解析 KV 文本和占位符。
+这是**非公开接口**，没有文档、可能会变。datafeed 缺的几样从本机客户端的 `game/dota/pak01_dir.vpk` 里读
+（KeyValues 文本，脚本自带一个小解析器）：
+
+| 字段 | 客户端文件 | 为什么不用 datafeed |
+|---|---|---|
+| `items.json` 的 `secret_shop` | `scripts/npc/items.txt` 的 `SecretShop` | datafeed 没有这一项；它的 `item_quality` 6 和神秘商店不完全重合（差 5 件） |
+| `items.json` 的 `components`、`purchasable` | `items.txt` 的 `ItemRecipe` / `ItemResult` / `ItemRequirements`、`ItemPurchasable` / `IsObsolete` | datafeed 只在图纸上挂组件 id，不说合成出什么，也不标已删除的配方 |
+| `heroes.json` 的 `abilities` | `scripts/npc/heroes/npc_dota_hero_*.txt` 的 `Ability1`、`Ability2`… | herodata 漏掉联动技能（影魔只有一个毁灭阴影），顺序也不是技能栏顺序 |
+| 数值行里的 `$str`、`$attack` 等 | `resource/localization/abilities_{english,schinese}.txt` 的 `dota_ability_variable_*` | datafeed 原样返回这些占位符 |
+
+两边是分开下载的：脚本逐件比对物品价格，任何一件对不上就报错退出（说明客户端和 datafeed 不是同一个补丁）。
+6934 / 7.41f 上 544 件全部一致 ✅，而且每件能买的合成物品，组件价格加起来正好等于它的价格 ✅
+（`tests/test_game_text.py` 每次都查）。如果哪天 datafeed 不能用了，同一个 `pak01_dir.vpk` 里的
+`scripts/npc/*.txt` 和 `resource/localization/*_{english,schinese}.txt` 就是离线替代，但占位符得自己解析。
 
 ## 2. 打补丁后怎么刷新
 
@@ -60,7 +71,8 @@ curl -sSL -o cli.zip https://github.com/ValveResourceFormat/ValveResourceFormat/
 ```
 
 ```bash
-# 中英文文本：约 3,400 次请求，冷启动约 30 分钟，缓存在 $TMPDIR/dota2_env_datafeed，中断后续跑
+# 中英文文本：约 3,400 次请求，冷启动约 30 分钟，缓存在 $TMPDIR/dota2_env_datafeed，中断后续跑；
+# 还要读本机客户端的 pak01_dir.vpk（不用开游戏），缓存齐了之后 2 秒跑完
 .venv/bin/python -u scripts/fetch_game_text.py
 ```
 
@@ -161,6 +173,15 @@ curl -sSL -o cli.zip https://github.com/ValveResourceFormat/ValveResourceFormat/
 - 一棵树旁边一直站着单位（包括自己的英雄）时它不会重生，树表也就一直显示没有树，和游戏一致。
 - 临时树：种下的树枝确实用掉了（背包里没了），但**没有任何树事件** ✅；发芽（Sprout）没测。
 
+### 4.6 神符状态不跟视野走
+
+无头 5v5（天辉 5 个英雄一直往东北走，0:00 时离最近的神符点也有 2,900 以上）实测 ✅：
+- 0:00 那一帧，world state 的 `rune_infos` 里四个点**同时**变成 AVAILABLE，本队没有任何单位看得到它们。
+- 之后哪个点被本队看到是空的，它才掉回来：下路强化点在 0:08（影魔走到 1,700 以内），上路强化点在 1:04（走到 500 以内）。
+  两个赏金点没人去看，一直是 AVAILABLE；2:00 上路强化点又变成 AVAILABLE。
+
+所以 `available` 是“这一轮刷过、本队还没看到它被拿走”，不是“看到那里有符”。
+
 ## 5. 树表与丢帧
 
 world state 的 `tree_events` 只在树变化时出现，是增量，而且只报本队看到的变化（迷雾里的变化等再次看到时
@@ -174,15 +195,27 @@ respawned 事件改；同一事件重复出现不会重复计数；id 超出 `ma
 
 ## 6. 文本数据的格式
 
-- `items.json`：`{id, name, cost, quality, neutral_tier, recipe, recipes, initial_charges, stock_max,
-  cooldowns, mana_costs, cast_ranges, values, en, zh}`。`recipes` 是配方组件的 item id 列表，
-  `neutral_tier` 非中立物品为 null。
-- `abilities.json`：非天赋技能 `{id, name, talent: false, innate, max_level, cooldowns, mana_costs,
-  cast_ranges, values, en, zh}`；天赋 `{id, name, talent: true, values, en, zh}`，通用天赋（如 +20 攻击力）
-  多个英雄共用，只记一次。
-- `heroes.json`：`{id, name, primary_attr, attack_capability, abilities, talents, en, zh}`。
-- `en` / `zh`：`name`、`desc`、`notes`、`shard`、`scepter`、`stats`（带标题的数值行，如
-  “DAMAGE: 90 / 160 / 230 / 300”），空字段省略。
+三个文件的表头都是 `{patch, client_version, fetched, source}`。
+
+- `items.json`：`{id, name, cost, quality, neutral_tier, recipe, purchasable, components, secret_shop,
+  initial_charges, stock_max, cooldowns, mana_costs, cast_ranges, values, en, zh}`。
+  - `recipe`：这条本身是图纸。`purchasable`：商店卖它（`ItemPurchasable` 不为 0，也没标 `IsObsolete`）；
+    不朽之守护（肉山盾）、奶酪、中立物品、已删除的物品都是 false，它们的 `cost` 没有意义。
+  - `components`：合成它的几种配方，每种是一串物品名，图纸只在商店卖它、而且要钱时才算一件（动力鞋三种配方都没有图纸）。
+    客户端写在组件名后面的 `*` 和列表末尾的 `;` 已去掉，已删除物品（`IsObsolete`）的配方不收。
+  - `secret_shop`：只有神秘商店卖。6934 上是 16 件：恶魔刀锋、鹰歌弓、能量之球、振奋宝石、神秘法杖、板甲、精气之球、
+    掠夺者之斧、圣者遗物、治疗指环、恐鳌之戒、闪避护符、赛莉蒙妮之冠、极限法球、活力之球、虚无宝石。
+    边路商店在这个版本已经没有了：`items.txt` 里所有 `SideShop` 行都被注释掉，地图上 `GetShopLocation` 的边路商店也返回
+    (0,0,0)，所以"野外买的装备"现在就是神秘商店的这 16 件。
+  - `neutral_tier` 非中立物品为 null。
+- `abilities.json`：非天赋技能 `{id, name, talent: false, innate, passive, granted_by, max_level, cooldowns,
+  mana_costs, cast_ranges, values, en, zh}`；`passive` 来自 datafeed 的 `behavior` 位，`granted_by` 是
+  `scepter` / `shard` / null（比如莉娜的腾焰斗篷要神杖）。天赋 `{id, name, talent: true, values, en, zh}`，
+  通用天赋（如 +20 攻击力）多个英雄共用，只记一次。
+- `heroes.json`：`{id, name, primary_attr, attack_capability, abilities, talents, en, zh}`。`abilities` 按客户端
+  `Ability1`、`Ability2`… 的顺序，也就是 bot API 从 0 数的技能栏；只收有文字的技能（`generic_hidden` 这类占位不收），
+  所以会有收尾用的子技能，如水晶室女的"停止极寒领域"。
+- `en` / `zh`：`name`、`desc`、`notes`、`shard`、`scepter`、`stats`（数值行），空字段省略。
 - 说明文字里的占位符都已换成数值（多级写成 `60 / 80 / 100`，`%%` 还原成 `%`），HTML 标签去掉、`<br>`
   变换行。替换规则（6934 / 7.41f 实测）：
   - `%name%`、`{s:name}` 对应同名 special value，名字不分大小写（记录里是 `AbilityCooldown`，文字里写
@@ -191,6 +224,8 @@ respawned 事件改；同一事件重复出现不会重复计数；id 超出 `ma
   - 碎片 / 神杖文字里的 `%bonus_X%` 是 X 的碎片 / 神杖值；只有碎片 / 神杖才有的数值平时是 0，文字里指的是升级后的值。
   - 天赋的数值不在天赋自己的记录里，而在它强化的那个技能的 special value 的 `bonuses` 里，写作
     `{s:bonus_<special value 名>}`，脚本按英雄收集后再替换。
+  - 数值行的标题用客户端自己的词替换 `$str` 这类缩写，写法和游戏里的提示框一样：`+10 力量`、`+24 攻击力`、
+    `基础伤害：85 / 150 / 215 / 280`；全为 0 的数值行（只在对局里才有意义的计数，如影魔的"当前最高灵魂数量"）不收。
   - 残留：物品 8 处、技能 57 处，都是 datafeed 记录里根本没有那个数值（如上古巨神的 `tick_rate`、知识之书的
     实时计数）。脚本每次都会打印残留数量。
 - datafeed 自己的缺陷：潮汐猎人的**英文** herodata 固定返回 `null`（中文正常），所以 herodata 每个英雄只取一种语言
@@ -210,3 +245,5 @@ respawned 事件改；同一事件重复出现不会重复计数；id 超出 `ma
 - 前哨被占领后，world state 里它的 `team_id` 会不会变，还没在长局里看到。⚠️
 - 肉山当前在哪个坑（7.41 起开局在上坑，15:00 后昼夜交替时换坑）、魔方当前在哪一侧，观测里都没有。
 - 高度只有级数，没有连续高度（bot VM 没有 `GetGroundHeight(vLoc)`）。
+- 文本没有命石（facet）：datafeed 的技能记录带 `facets_loc`，但 bot 用哪块命石不知道，说明按默认写。
+- 天赋文字有，但环境只按 `ability_priority` 点技能栏 0–5，从不点天赋，所以 prompt 里不放天赋。

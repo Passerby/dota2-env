@@ -103,6 +103,34 @@ def test_a_vector_skill_is_cast_through_its_own_heros_slots(env):
     assert all(action['actionType'] == 'DOTA_UNIT_ORDER_NONE' for row, action in enumerate(sent) if row != 2)
 
 
+def test_move_to_sends_each_hero_to_its_own_point(env):
+    env.reset()
+    action = dict(team_action(1, type=int(ActionType.MOVE_TO)), point=np.zeros((TEAM_SIZE, 2), np.float32))
+    action['point'][1] = (4860.0, -6379.0)
+    env.step(action)
+    sent = last_session().sent[-1][1]
+    assert sent[1]['moveToLocation']['location'] == {'x': 4860.0, 'y': -6379.0, 'z': 0.0}
+    assert all(order['actionType'] == 'DOTA_UNIT_ORDER_NONE' for row, order in enumerate(sent) if row != 1)
+
+
+def test_a_rune_pickup_goes_out_for_its_own_hero_only(env):
+    env.reset()
+    last_session().available_runes.add('power_bottom')
+    *_, info = env.step(NOOP)
+    assert info['action_mask']['rune'].shape == (TEAM_SIZE, len(RUNE_SPOTS))
+    assert info['action_mask']['rune'][:, RUNE_SPOTS.index('power_bottom')].all()
+    rune = np.zeros(TEAM_SIZE, np.int64)
+    rune[2] = RUNE_SPOTS.index('power_bottom')
+    env.step(dict(team_action(2, type=int(ActionType.PICKUP_RUNE)), rune=rune))
+    sent = last_session().sent[-1][1]
+    assert sent[2] == {
+        'actionType': 'DOTA_UNIT_ORDER_PICKUP_RUNE',
+        'player': 2,
+        'pickUpRune': {'location': {'x': 1180.0, 'y': -1216.0}},
+    }
+    assert all(order['actionType'] == 'DOTA_UNIT_ORDER_NONE' for row, order in enumerate(sent) if row != 2)
+
+
 def test_hidden_hero_is_walked_out_while_the_others_wait(env):
     env.reset()
     last_session().hidden_heroes.add(3)
@@ -110,7 +138,7 @@ def test_hidden_hero_is_walked_out_while_the_others_wait(env):
     observation, *_ = env.step(NOOP)
     sent = last_session().sent[-1][1]
     assert [action['actionType'] for action in sent].count('DOTA_UNIT_ORDER_NONE') == TEAM_SIZE - 1
-    location = sent[3]['moveDirectly']['location']
+    location = sent[3]['moveToLocation']['location']
     assert location['x'] > -6700 and location['y'] > -6700  # towards the map centre
     assert observation['unit_mask'][3].sum() > 0
 

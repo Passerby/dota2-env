@@ -19,11 +19,12 @@ from gymnasium.utils.env_checker import check_env
 
 import dota2_env
 from dota2_env.actions import MOVE_DISTANCE, ActionType
-from dota2_env.bridge.constants import TEAM_RADIANT
+from dota2_env.bridge.constants import TEAM_DIRE, TEAM_RADIANT, UNIT_TYPE_HERO, UNIT_TYPE_LANE_CREEP, UNIT_TYPE_TOWER
 from dota2_env.bridge.protos.dota_gcmessages_common_bot_script_pb2 import (
     CMsgBotWorldState,
 )
 from dota2_env.bridge.worldstate import connect, read_world_state
+from dota2_env.game_text import load_records
 from dota2_env.map_features import (
     LANDMARK_FEATURES,
     LANDMARKS,
@@ -33,11 +34,13 @@ from dota2_env.map_features import (
     RUNE_FEATURES,
     load_map,
 )
-from dota2_env.observation import N_ABILITIES, RESPAWN_LOCATION
+from dota2_env.observation import HERO_FEATURES, N_ABILITIES, RESPAWN_LOCATION
 from dota2_env.rewards import Mid1v1Rules
+from dota2_env.text import describe
 from dota2_env.wrappers import FlatActionWrapper, FlatObservationWrapper, TextWrapper
 
 NOOP = {'type': 0, 'move': 0, 'target': 0, 'ability': 0}
+SCROLL = load_records('items')['item_tpscroll']['id']
 
 
 @pytest.fixture
@@ -70,6 +73,23 @@ def test_reset_waits_for_hero_and_buys_starting_items(env):
     # queued extras are sent once
     env.step(NOOP)
     assert not any('purchaseItem' in e for e in last_session().sent[1][2])
+
+
+def test_a_label_goes_out_once_for_our_hero(env):
+    env.reset(seed=0)
+    env.unwrapped.queue_label('去中路补刀')
+    env.step(NOOP)
+    env.step(NOOP)
+    labels = [[e for e in extras if e['actionType'] == 'ACTION_LABEL'] for _, _, extras in last_session().sent]
+    assert labels == [[{'actionType': 'ACTION_LABEL', 'player': 0, 'label': {'text': '去中路补刀'}}], []]
+
+
+def test_a_long_label_is_cut_to_the_size_of_the_health_bar_label_between_two_characters(env):
+    env.reset()
+    env.unwrapped.queue_label('补刀' * 100)  # 600 bytes of UTF-8
+    env.step(NOOP)
+    sent = next(extra for extra in last_session().sent[-1][2] if extra['actionType'] == 'ACTION_LABEL')
+    assert sent['label']['text'] == '补刀' * 42 + '补'  # 85 characters of three bytes each: 255
 
 
 def test_action_mask_and_target_rows(env):
@@ -140,6 +160,151 @@ def test_silence_blocks_skills_and_mute_blocks_items(env):
     assert cast[0] and not cast[N_ABILITIES]
 
 
+def test_tp_casts_the_scroll_in_the_tp_slot_once_it_is_ready(env):
+    env.reset()
+    session = last_session()
+    session.tp = (1, 40.0)  # the scroll a 5v5 hero spawns with is on cooldown
+    observation, _, _, _, info = env.step(NOOP)
+    assert not info['action_mask']['type'][ActionType.TP]
+    assert observation['hero'][HERO_FEATURES.index('tp_cooldown')] == pytest.approx(4.0)
+    session.tp = (1, 0.0)
+    *_, info = env.step(NOOP)
+    assert info['action_mask']['type'][ActionType.TP]
+    env.step(dict(NOOP, type=int(ActionType.TP), point=(-1544.0, 99999.0)))  # our mid tier 1, dragged off the map
+    max_y = load_map().world_bounds[3]
+    assert session.sent[-1][1][0] == {
+        'actionType': 'DOTA_UNIT_ORDER_CAST_POSITION',
+        'player': 0,
+        'castLocation': {'abilitySlot': -16, 'location': {'x': -1544.0, 'y': max_y, 'z': 0.0}},  # TP slot 15
+    }
+    session.hero_flags = {'is_rooted': True}
+    *_, info = env.step(NOOP)
+    assert not info['action_mask']['type'][ActionType.TP]
+
+
+def test_a_rune_is_picked_up_at_the_spot_the_observation_marks(env):
+    env.reset()
+    session = last_session()
+    *_, info = env.step(NOOP)
+    assert not info['action_mask']['type'][ActionType.PICKUP_RUNE]
+    session.available_runes.add('bounty_bottom')
+    *_, info = env.step(NOOP)
+    assert info['action_mask']['rune'].tolist() == [0, 0, 0, 1] and info['action_mask']['type'][ActionType.PICKUP_RUNE]
+    env.step(dict(NOOP, type=int(ActionType.PICKUP_RUNE), rune=3))
+    assert session.sent[-1][1][0] == {
+        'actionType': 'DOTA_UNIT_ORDER_PICKUP_RUNE',
+        'player': 0,
+        'pickUpRune': {'location': {'x': 595.0, 'y': -4660.0}},  # the bottom bounty spot of map.json
+    }
+
+
+def test_a_talent_tier_keeps_a_point_back_until_the_agent_picks(env):
+    env.reset()
+    session = last_session()
+    session.hero_flags = {'level': 10, 'ability_points': 2, 'is_stunned': True}
+    env.step(NOOP)
+    *_, info = env.step(NOOP)
+    assert info['action_mask']['talent'].tolist() == [1, 1, 0, 0, 0, 0, 0, 0]  # stunned, but points can be spent
+    assert info['action_mask']['type'][ActionType.TALENT] and not info['action_mask']['type'][ActionType.MOVE]
+    trained = [extra['trainAbility'] for extra in session.sent[-1][2] if 'trainAbility' in extra]
+    assert trained and all(extra['keep'] == 1 for extra in trained)
+    env.step(dict(NOOP, type=int(ActionType.TALENT), talent=1))
+    assert session.sent[-1][1][0] == {
+        'actionType': 'DOTA_UNIT_ORDER_TRAIN_ABILITY',
+        'player': 0,
+        'trainAbility': {'ability': 'special_bonus_unique_nevermore_4', 'keep': 0},
+    }
+    session.learned_talents.add(1)
+    env.step(NOOP)
+    observation, _, _, _, info = env.step(NOOP)
+    assert observation['talents'].tolist() == [0, 1, 0, 0, 0, 0, 0, 0]
+    assert not info['action_mask']['talent'].any()  # taking one closes its tier; tier 15 is five levels away
+    assert all(extra['trainAbility']['keep'] == 0 for extra in session.sent[-1][2] if 'trainAbility' in extra)
+
+
+def test_the_courier_is_sent_for_whatever_waits_in_the_stash(env):
+    env.reset()
+    session = last_session()
+    *_, info = env.step(NOOP)
+    assert not info['action_mask']['type'][ActionType.COURIER]  # the stash is empty
+    session.stash = [SCROLL]
+    observation, _, _, _, info = env.step(NOOP)
+    assert (
+        info['action_mask']['type'][ActionType.COURIER] and observation['hero'][HERO_FEATURES.index('stash_items')] == 1
+    )
+    env.step(dict(NOOP, type=int(ActionType.COURIER)))
+    assert session.sent[-1][1][0] == {
+        'actionType': 'ACTION_COURIER',
+        'player': 0,
+        'courier': {'action': 'COURIER_ACTION_TAKE_AND_TRANSFER_ITEMS'},
+    }
+    session.courier_alive = False
+    *_, info = env.step(NOOP)
+    assert not info['action_mask']['type'][ActionType.COURIER]
+
+
+def bought(session):
+    return [extra['purchaseItem']['itemName'] for extra in session.sent[-1][2] if 'purchaseItem' in extra]
+
+
+def test_a_scroll_is_bought_only_while_the_hero_has_none_anywhere(env):
+    env.reset()
+    session = last_session()
+    session.hero_flags = {'reliable_gold': 500}
+    env.step(NOOP)
+    env.step(NOOP)
+    assert bought(session) == ['item_tpscroll']
+    session.courier_items = [SCROLL]  # on its way from the stash
+    env.step(NOOP)
+    env.step(NOOP)
+    assert bought(session) == []
+    session.courier_items, session.stash = [], [SCROLL]
+    env.step(NOOP)
+    env.step(NOOP)
+    assert bought(session) == []
+    session.hero_flags = {'reliable_gold': 99}
+    session.stash = []
+    env.step(NOOP)
+    env.step(NOOP)
+    assert bought(session) == []  # a scroll costs 100
+
+
+def test_restock_tp_can_be_turned_off():
+    env = gym.make('dota2_env/Mid1v1-v0', session_factory=FakeSession, restock_tp=False)
+    env.reset()
+    last_session().hero_flags = {'reliable_gold': 500}
+    env.step(NOOP)
+    env.step(NOOP)
+    assert bought(last_session()) == []
+    env.close()
+
+
+def test_text_shows_the_tp_slot_the_stash_and_the_talents(env):
+    text_env = TextWrapper(env)
+    text_env.reset()
+    session = last_session()
+    session.tp, session.stash = (1, 0.0), [SCROLL]
+    session.hero_flags = {'level': 15, 'ability_points': 1}
+    session.learned_talents.add(1)
+    text, *_ = text_env.step('{"type": "NOOP"}')
+    assert '\n  TP slot: item_tpscroll 回城卷轴 charges 1 ready: TP\n' in text
+    assert '\nstash: item_tpscroll 回城卷轴 charges 1; courier dist ' in text
+    talents = next(line for line in text.splitlines() if line.startswith('talents: '))
+    learned, ready = talents.removeprefix('talents: ').split('; ')
+    assert learned == '[1] +30 灵魂盛宴攻击速度 learned'
+    assert ready == '[2] +1.5 魔王降临降低护甲 / [3] +2 灵魂盛宴每名英雄收集灵魂 ready: TALENT'
+    legal = text.split('legal action types: ')[1].split(', ')
+    assert {'TP', 'TALENT', 'COURIER'} <= set(legal) and 'PICKUP_RUNE' not in legal
+    _, _, _, _, info = text_env.step('{"type": "TALENT", "talent": 0}')
+    assert info['action_error'] == 'talent 0 is not valid for TALENT'  # its tier is taken
+    _, _, _, _, info = text_env.step('{"type": "TALENT", "talent": 3}')
+    assert info['action_error'] is None
+    assert (
+        last_session().sent[-1][1][0]['trainAbility']['ability']
+        == 'special_bonus_unique_nevermore_frenzy_max_collection_count'
+    )
+
+
 def test_last_hit_is_rewarded(env):
     env.reset()
     base = env.unwrapped
@@ -192,15 +357,28 @@ def test_flat_wrappers(env):
     flat = FlatObservationWrapper(FlatActionWrapper(env))
     observation, _ = flat.reset()
     assert flat.observation_space.contains(observation)
+    assert flat.action_space.nvec[0] == ActionType.MOVE_TO  # no point to carry, so MOVE_TO is left out
     observation, *_ = flat.step(np.array([ActionType.MOVE, 0, 0, 0]))
-    assert last_session().sent[-1][1][0]['actionType'] == 'DOTA_UNIT_ORDER_MOVE_DIRECTLY'
+    assert last_session().sent[-1][1][0]['actionType'] == 'DOTA_UNIT_ORDER_MOVE_TO_POSITION'
+
+
+def test_move_to_hands_the_point_itself_to_the_client(env):
+    env.reset()
+    env.step(dict(NOOP, type=int(ActionType.MOVE_TO), point=(4860.0, -6379.0)))  # the bottom tier 1, 11,000 away
+    assert last_session().sent[-1][1][0]['moveToLocation']['location'] == {'x': 4860.0, 'y': -6379.0, 'z': 0.0}
+    env.step(dict(NOOP, type=int(ActionType.MOVE_TO), point=(99999.0, -99999.0)))
+    _, min_y, max_x, _ = load_map().world_bounds  # brought onto the map, at its south-east corner
+    assert last_session().sent[-1][1][0]['moveToLocation']['location'] == {'x': max_x, 'y': min_y, 'z': 0.0}
 
 
 def test_text_wrapper(env):
     text_env = TextWrapper(env)
     text, info = text_env.reset()
     assert 'nevermore_shadowraze1' in text and 'attackable' in text and 'legal action types' in text
-    assert '[0] nevermore_shadowraze1 lvl 1 ready: CAST' in text and '[6] item_tango charges 3 ready: CAST' in text
+    assert (
+        '[0] nevermore_shadowraze1 毁灭阴影 lvl 1 ready: CAST' in text
+        and '[6] item_tango 树之祭祀 charges 3 ready: CAST' in text
+    )
     row = env.unwrapped._observation.unit_handles.index(ENEMY_CREEP_HANDLE)
     _, _, _, _, info = text_env.step(json.dumps({'type': 'attack', 'target': row}))
     assert info['action_error'] is None
@@ -209,6 +387,11 @@ def test_text_wrapper(env):
     assert 'not castable' in info['action_error']
     _, _, _, _, info = text_env.step('{"type": "CAST_DIRECTION", "ability": 0, "move": 4}')  # a no-target skill
     assert 'CAST_DIRECTION is not legal' in info['action_error']
+    _, _, _, _, info = text_env.step('{"type": "MOVE_TO", "point": [0, 0]}')
+    assert info['action_error'] is None
+    assert last_session().sent[-1][1][0]['moveToLocation']['location'] == {'x': 0.0, 'y': 0.0, 'z': 0.0}
+    _, _, _, _, info = text_env.step('{"type": "MOVE_TO", "point": [NaN, 0]}')
+    assert 'not on the map' in info['action_error']
     _, _, _, _, info = text_env.step('walk to the river')
     assert 'cannot parse' in info['action_error']
     assert last_session().sent[-1][1][0]['actionType'] == 'DOTA_UNIT_ORDER_NONE'
@@ -243,8 +426,8 @@ def test_text_says_where_a_vector_skill_swings(env):
     last_session().cast_slots[0][0] = ('pangolier_swashbuckle', ('point', 'vector'))
     text, *_ = text_env.step('{"type": "NOOP"}')
     ready = 'ready: CAST_TARGET CAST_DIRECTION (vector: runs on past the target / along the direction)'
-    assert f'[0] pangolier_swashbuckle lvl 1 {ready}' in text
-    assert '[6] item_tango charges 3 ready: CAST\n' in text  # only the vector skill carries the note
+    assert f'[0] pangolier_swashbuckle 虚张声势 lvl 1 {ready}' in text
+    assert '[6] item_tango 树之祭祀 charges 3 ready: CAST\n' in text  # only the vector skill carries the note
 
 
 def test_worldstate_socket_framing_survives_fragmentation():
@@ -278,9 +461,9 @@ def test_unreported_respawned_hero_can_still_walk(env):
     last_session().hero_hidden = True
     observation, _, _, _, info = env.step(NOOP)
     assert observation['hero'][4] == 1.0 and observation['unit_mask'].sum() == 0
-    assert list(np.flatnonzero(info['action_mask']['type'])) == [ActionType.NOOP, ActionType.MOVE]
+    assert list(np.flatnonzero(info['action_mask']['type'])) == [ActionType.NOOP, ActionType.MOVE, ActionType.MOVE_TO]
     observation, *_ = env.step(dict(NOOP, type=int(ActionType.MOVE), move=4))
-    location = last_session().sent[-1][1][0]['moveDirectly']['location']
+    location = last_session().sent[-1][1][0]['moveToLocation']['location']
     assert location['x'] == pytest.approx(-6700) and location['y'] == pytest.approx(-6400)  # north, as asked
     assert observation['unit_mask'].sum() > 0  # and is reported again
 
@@ -290,7 +473,7 @@ def test_unreported_hero_is_walked_out_instead_of_waiting(env):
     last_session().hero_hidden = True
     env.step(NOOP)
     observation, *_ = env.step(NOOP)
-    location = last_session().sent[-1][1][0]['moveDirectly']['location']
+    location = last_session().sent[-1][1][0]['moveToLocation']['location']
     assert location['x'] > -6700 and location['y'] > -6700  # towards the map centre
     assert observation['unit_mask'].sum() > 0
 
@@ -384,3 +567,79 @@ def test_map_of_an_unreported_hero_is_measured_from_its_spawn_point(env):
     observation, *_ = env.step(NOOP)
     spawn = RESPAWN_LOCATION[TEAM_RADIANT]
     assert observation['landmarks'][:, :2] * MAP_SCALE + spawn == pytest.approx(load_map().landmarks, abs=0.1)
+
+
+def test_text_names_rune_spots_and_landmarks_in_the_clients_words(env):
+    text_env = TextWrapper(env)
+    text_env.reset()
+    last_session().available_runes.add('power_top')
+    text, *_ = text_env.step('{"type": "NOOP"}')
+    lines = dict(line.split(': ', 1) for line in text.splitlines() if line.startswith(('rune spots', 'landmarks')))
+    runes, landmarks = lines['rune spots'].split('; '), lines['landmarks'].split('; ')
+    assert (
+        runes[0] == '[0] 上路强化神符 dist 2516 (-140,+2512) available'
+    )  # at (-1640, 1112), the hero at (-1500, -1400)
+    assert [spot.split()[1] for spot in runes[1:]] == ['下路强化神符', '上路赏金神符', '下路赏金神符']
+    assert not any(spot.endswith('available') for spot in runes[1:])
+    assert (
+        landmarks[-2].startswith('上路前哨 dist ')
+        and landmarks[-2].endswith(' ours')
+        and landmarks[-1].endswith(' enemy')
+    )
+
+
+def test_the_nearest_tree_is_one_the_team_still_knows_to_stand(env):
+    text_env = TextWrapper(env)
+    text, _ = text_env.reset()
+    assert 'nearest tree dist 516 (+476,-200)' in text  # LONE_TREE, at (-1024, -1600)
+    last_session().tree_events.append((LONE_TREE, True))
+    text, *_ = text_env.step('{"type": "NOOP"}')
+    assert 'nearest tree dist 564 ' in text
+
+
+def test_terrain_says_where_the_trees_within_one_move_are(env):
+    text_env = TextWrapper(env)
+    text_env.reset()
+    tree_x, tree_y = load_map().tree_positions[LONE_TREE]
+    last_session().hero_xy = [float(tree_x) - 150, float(tree_y) + 1]
+    text, *_ = text_env.step('{"type": "NOOP"}')
+    groups = text.split('within 300: ')[1].split('\n')[0].split('; ')
+    trees = next(group for group in groups if group.startswith('tree '))
+    assert '(+96,+0)' in trees.split()  # straight ahead, where its cells start 64 short of it
+
+
+def test_each_lane_is_given_by_its_outermost_standing_tower(env):
+    _, info = env.reset()
+    world_state = info['world_state']
+    text = describe(world_state, TEAM_RADIANT, trees=env.unwrapped.trees)
+    assert 'our towers, outermost standing per lane: 中路一塔 dist 45 (-44,-8)\n' in text
+    assert 'enemy towers, outermost standing per lane: 中路一塔 dist 2882 (+2024,+2052)\n' in text
+    next(unit for unit in world_state.units if unit.name == 'npc_dota_goodguys_tower1_mid').is_alive = False
+    tier2 = world_state.units.add(name='npc_dota_goodguys_tower2_mid', unit_type=UNIT_TYPE_TOWER, is_alive=True)
+    tier2.team_id, tier2.location.x, tier2.location.y = TEAM_RADIANT, -4000.0, -4000.0
+    text = describe(world_state, TEAM_RADIANT, trees=env.unwrapped.trees)
+    assert 'our towers, outermost standing per lane: 中路二塔 dist 3607 (-2500,-2600)\n' in text
+
+
+def test_text_lists_the_enemy_heroes_in_sight_and_the_creep_waves(env):
+    _, info = env.reset()
+    world_state = info['world_state']
+    text = describe(world_state, TEAM_RADIANT, trees=env.unwrapped.trees)
+    # the enemy hero stands 900 north-east of ours at (-1500, -1400), one creep of each side next to it
+    assert 'enemy heroes in sight: 影魔 lvl 0 hp 500/500 at (-600, -500) dist 1273\n' in text
+    waves = text.split('creep waves: ')[1].split('\n')[0].split('; ')
+    assert sorted(waves) == [
+        '中路 enemy 1 hp 22% at (-1200, -1400) dist 300',
+        '中路 ours 1 hp 100% at (-1300, -1300) dist 224',
+    ]
+    for x, y in ((-1000.0, -1300.0), (-6100.0, 3000.0)):  # one creep joining the enemy wave, one alone on the top lane
+        creep = world_state.units.add(unit_type=UNIT_TYPE_LANE_CREEP, team_id=TEAM_DIRE, is_alive=True)
+        creep.health, creep.health_max, creep.location.x, creep.location.y = 550, 550, x, y
+    world_state.units.add(
+        unit_type=UNIT_TYPE_HERO, team_id=TEAM_DIRE, player_id=9, is_alive=True, name='npc_dota_hero_wisp'
+    )
+    text = describe(world_state, TEAM_RADIANT, trees=env.unwrapped.trees)
+    waves = text.split('creep waves: ')[1].split('\n')[0].split('; ')
+    assert waves[0] == '上路 enemy 1 hp 100% at (-6100, 3000) dist 6366'  # lanes in order, top first
+    assert '中路 enemy 2 hp 61% at (-1100, -1350) dist 403' in waves
+    assert '小精灵' not in text  # a 1v1 filler hero is no enemy in sight

@@ -1,0 +1,37 @@
+{# The user message, rendered every turn (agent.user_prompt). The item notes open it because they only change
+   with the inventory, so a gateway's prefix cache still covers them; state is the hero's text.describe(), and
+   history the agent's last commands (agent.Note), oldest first. #}
+{% if items %}
+你身上的物品：
+{% for item in items %}
+{{ item }}
+{% endfor %}
+
+{% endif %}
+{{ state }}
+{% if teammates %}
+
+你的队友：
+{% for mate, hero in teammates %}
+{% if hero is none %}
+  {{ mate.nickname }} {{ positions[mate.position] }} 状态未上报
+{% else %}
+  {{ mate.nickname }} {{ positions[mate.position] }} {{ hero.name | display_name }} lvl {{ hero.level }} hp {{ '%.0f' | format(100 * hero.health / hero.health_max) }}% 位于 ({{ '%.0f' | format(hero.location.x) }}, {{ '%.0f' | format(hero.location.y) }}) lh/dn {{ hero.last_hits }}/{{ hero.denies }}
+{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if history %}
+你最近的命令，旧的在前，括号里是命令下发时你站的位置：
+{% for note in history %}
+{% if note.kind == 'undelivered' %}
+  {{ note.dota_time | clock }} 你的回复没能送达：{{ note.error }}
+{% elif note.kind == 'unusable' %}
+  {{ note.dota_time | clock }} 你的回复无法使用：{{ note.error }}
+{% else %}
+  {{ note.dota_time | clock }}{% if note.position %} ({{ '%.0f' | format(note.position[0]) }}, {{ '%.0f' | format(note.position[1]) }}){% endif %} {{ note.step }} {{ '已经下达' if note.kind == 'issued' else '被拒绝了：' ~ note.error }}
+{% endif %}
+{% endfor %}
+{% else %}
+你还没有下过命令
+{% endif %}

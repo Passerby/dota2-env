@@ -95,7 +95,8 @@
 | `reward_fn` | `LaningReward()` | 权重见 `rewards.py: DEFAULT_WEIGHTS`，可传 `LaningReward(weights={...})` 局部覆盖 |
 | `rules` | `Mid1v1Rules(deaths_to_lose=2, max_dota_time=600)` | 终止 / 截断条件 |
 | `starting_items` | 吃树、仙灵火、2 树枝、圆环 | 第一步自动购买；`()` 关闭 |
-| `ability_priority` | `(5, 0, 3, 4, 1, 2)` | 有技能点时按此槽位顺序尝试加点（Lua 跳过当前不能升的）；`()` 关闭 |
+| `ability_priority` | `(5, 0, 3, 4, 1, 2)` | 有技能点时按此槽位顺序尝试加点（Lua 跳过当前不能升的）；`()` 关闭。每个到了等级、还没选的天赋层留一个点给 `TALENT`（加点动作带 `keep`） |
+| `restock_tp` | `True` | 英雄身上、储藏处、信使身上都没有回城卷轴，金钱又够时买一张；在野外买的进储藏处，用 `COURIER` 送（[FEATURES.md](FEATURES.md) 2.7） |
 | `step_timeout` | `20.0` 秒（墙钟） | 这么久没有新 worldstate 就结束本局：日志里有胜负 → `terminated`，否则 `truncated` + `info["error"]` |
 | `replay_dir` | `None` | 给一个目录就录像，`close()` 时把 `.dem` 移过去并把路径写进 `env.unwrapped.replay_path`；`None` 不录 |
 | `keep_files` | `False` | 保留会话目录用于排查 |
@@ -114,11 +115,13 @@
 | `rules` | `AllPick5v5Rules(max_dota_time=2400)` | 基地被破 → `terminated`；2400 游戏秒 → `truncated` |
 | `reward_fn` | `TeamReward()` | 权重见 `rewards.py: TeamReward.DEFAULT_WEIGHTS` |
 | `starting_items` | 吃树、2 树枝、圆环 | **每个**英雄都买一份 |
-| `ability_priority` | `(5, 0, 3, 4, 1, 2)` | 每个英雄各自加点 |
+| `ability_priority` | `(5, 0, 3, 4, 1, 2)` | 每个英雄各自加点，各自给天赋留点 |
+| `restock_tp` | `True` | 每个英雄各自补买回城卷轴 |
 | 游戏模式 | `DOTA_GAMEMODE_AP`(1) | 写死在 env 里，和 1v1 的 21 一样不作为参数暴露 |
 
 `reset(options={"timeout": 600})`：5v5 要多等选英雄 + 策略阶段，默认超时比 1v1 长。
-`queue_purchase(row, item)` / `queue_train_ability(row, ability)` / `queue_chat(row, message)` 的第一个参数是英雄行号。
+`queue_purchase(row, item)` / `queue_train_ability(row, ability)` / `queue_chat(row, message)` / `queue_label(row, text)`
+的第一个参数是英雄行号。`queue_label` 把文字放在英雄血条上方（只有开窗口才看得见，见 [SERVER_VM.md](SERVER_VM.md) §5）。
 
 LLM 对局的那份 YAML（gateway、每个英雄一个 agent、决策频率、花费上限）不是环境参数，见
 [LLM_MATCH.md](LLM_MATCH.md)。
@@ -132,6 +135,7 @@ LLM 对局的那份 YAML（gateway、每个英雄一个 agent、决策频率、�
 | Lua 就绪上报 | 同上 | 第 10 次 `Think` | 打印 `LUARDY {team, player_id, abilities}`，`env.unwrapped.ability_names()` 的数据来源 |
 | 施法格上报 | 同上 + `behavior.lua` | 技能 0-5 / 背包格 0-5 一变就打 | 打印 `SLOTS {team, player_id, slots}`（名字 + 施法类型），`env.unwrapped.cast_slots()` 和 `ability` 掩码的数据来源（worldstate 只有物品 id，也没有施法方式） |
 | 看门狗阈值 | 引擎 | 60 秒 | 仅在不带 `-nowatchdog` 时生效 ✅ |
+| 头顶文字 | `actions.py` + `server_actions.lua` | `LABEL_BYTES=255`，白色 | `ACTION_LABEL` 设成英雄的 `SetCustomHealthLabel`，客户端自己画在血条上方；联网字符串 256 字节，中文最多 85 个字，Python 在字符之间截断 |
 | 监听队列上限 | `worldstate.py` | 2 帧 | 超出的帧在监听进程里丢弃；`observe()` 再跳到最新一帧。两处被丢掉的帧里的 `tree_events` 都会接到下一帧前面 |
 | 关闭等待 | `game.py: stop_dota` | 20 秒 | SIGTERM 之后等客户端自己退出，超时才 SIGKILL |
 | 单位表 | `observation.py` | `MAX_UNITS=32`，`UNIT_RADIUS=1600` | 观测里最近单位的数量与范围 |
@@ -139,7 +143,10 @@ LLM 对局的那份 YAML（gateway、每个英雄一个 agent、决策频率、�
 | 塔数 | `observation.py` | `N_TOWERS=11` | 每方的塔总数，`team` 向量里做归一化用（实测确认：3 路各 3 座 + 基地 2 座）|
 | 技能槽 | `observation.py` | `N_ABILITIES=6` | 只看槽位 0-5 |
 | 背包格 | `observation.py` | `N_ITEM_SLOTS=6` | 只看背包格 0-5；动作的 `ability` 因此是 `N_CAST_SLOTS=12` 选一（`actions.py`） |
-| 移动 | `actions.py` | 16 方向 × 300 距离 | `MOVE` 的离散化 |
+| TP 格 / 储藏处 | `observation.py` | `TP_SLOT=15`，`STASH_SLOTS=9-14` | 回城卷轴的专用格（`TP` 下发 `abilitySlot=-16`）和储藏处；`hero` 的最后三位就数这两处 |
+| 天赋 | `observation.py` | `N_TALENTS=8`，`TALENT_LEVELS=(10, 15, 20, 25)` | 每两个一层，这一层的开放等级；客户端的 `CanAbilityBeUpgraded` 对天赋不可靠，所以在 Python 里判 |
+| 神符拾取半径 | `server_actions.lua` | `RUNE_REACH=400` | 服务器 VM 在神符点这么近的范围里找最近的神符实体下 `PICKUP_RUNE`；实测神符最远离点位 90 |
+| 移动 | `actions.py` | 16 方向 × 300 距离 | `MOVE` 的离散化；下的是 `MOVE_TO_POSITION`，走客户端自己的寻路 |
 | 方向施法 | `actions.py` | 16 方向 × 技能的 `cast_range` | `CAST_DIRECTION` 的落点；`cast_range` 为 0 时退回 300 |
 | 反补阈值 | `actions.py` | 血量 < 50% | 友方小兵何时可作为攻击目标 |
 | 复活出生点 | `observation.py` | 天辉 (-6700,-6700)，夜魇 (6900,6650) | 英雄复活后未被上报时 MOVE 的起点；agent 不发 MOVE 时环境从这里朝地图中心走一步 |
@@ -148,6 +155,9 @@ LLM 对局的那份 YAML（gateway、每个英雄一个 agent、决策频率、�
 | 点位匹配半径 | `map_features.py` | `SPOT_RADIUS=200` | `rune_infos` / 本方建筑离 `map.json` 的点位这么近才算“就在这个点上” |
 | 神符可用状态 | `map_features.py` | `RUNE_STATUS_AVAILABLE=1` | bot API 的值，`extract_map.py` 会和客户端核对 |
 | 地图数据版本 | `data/map.json` | ClientVersion 6934 / 7.41f | 环境构造时和本机 `steam.inf` 比对，不一致打 warning；刷新见 `docs/MAP_DATA.md` |
+| 文本数据版本 | `data/items.json` 等 | ClientVersion 6934 / 7.41f | `fetch_game_text.py` 逐件比对客户端和 datafeed 的物品价格，对不上就报错 |
+| 文本的地形行 | `text.py` | `RAY_STEP=32`，看一步 `MOVE` 那么远（300） | `within 300` 沿 16 个 move 方向每 32 单位看一次，把 300 内先碰到的树 / 墙 / 坡按相对位置列出 |
+| 最近的树 | `text.py` | `TANGO_TREE_RANGE=700` | 和 lua 对树之祭祀 CAST 找树的半径一样（`actions/use_ability.lua`），再远就写 `no tree within 700` |
 
 ## 7. 实时性：游戏不等 agent
 

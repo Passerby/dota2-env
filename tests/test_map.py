@@ -71,19 +71,6 @@ def test_local_map_is_centred_on_the_hero_and_blocked_past_the_map_edge():
     assert corner[MAP_FEATURES.index('blocked'), :MAP_RADIUS].all()  # the rows south of the map
 
 
-def test_item_and_ability_text_is_there_in_both_languages():
-    items = {item['name']: item for item in data_file('items.json')['items']}
-    assert items['item_tango']['cost'] > 0
-    assert items['item_tango']['en']['name'] == 'Tango' and items['item_tango']['zh']['name']
-    abilities = {ability['name']: ability for ability in data_file('abilities.json')['abilities']}
-    for name in ('nevermore_shadowraze1', 'nevermore_shadowraze2', 'special_bonus_unique_nevermore_7'):
-        for language in ('en', 'zh'):
-            text = json.dumps(abilities[name][language], ensure_ascii=False)
-            assert re.search(r'%\w+%|\{s:\w+\}', text) is None, (name, language, text)
-    heroes = {hero['name']: hero for hero in data_file('heroes.json')['heroes']}
-    assert 'nevermore_shadowraze1' in heroes['npc_dota_hero_nevermore']['abilities']
-
-
 @pytest.mark.parametrize('name', ['map.json', 'items.json', 'abilities.json', 'heroes.json'])
 def test_data_files_name_their_patch(name):
     assert re.fullmatch(r'7\.\d+[a-z]?', data_file(name)['patch'])

@@ -14,16 +14,27 @@ gateways:
     api_key: ${DEEPSEEK_API_KEY}
     model: FILL_ME              # e.g. the cheap chat model, not the reasoner, for 1 Hz play
     price_per_mtok: {input: 0.0, output: 0.0}   # USD per million tokens, only used for the cost report
-    timeout_seconds: 8.0
+    timeout_seconds: 8.0        # for the whole streamed reply; lines that arrived by then still go out
     params: {temperature: 0.3, max_tokens: 200}
 
   openrouter:
     base_url: https://openrouter.ai/api/v1
     api_key: ${OPENROUTER_API_KEY}
     model: FILL_ME              # one key, every vendor: the easiest way to make two teams differ
-    price_per_mtok: {input: 0.0, output: 0.0}
+    price_per_mtok: {input: 0.0, output: 0.0}   # zero on purpose: OpenRouter bills the call in usage.cost
     timeout_seconds: 10.0
-    params: {temperature: 0.3, max_tokens: 200}
+    # A provider's own thinking switch does not survive the trip. DeepSeek's thinking {type: disabled}
+    # is ignored here and the reply spends every one of its max_tokens on reasoning, so not one line of
+    # it comes back and every hero holds. OpenRouter's own switch is reasoning {enabled: false}
+    # (reasoning {effort: none} is the same one); reasoning {exclude: true} only hides the thinking -
+    # you still wait for it and still pay for it.
+    # One model is served by two dozen providers whose warm median spans 0.6s to 20s, so pin the one
+    # you measured rather than letting it pick, and turn fallbacks off so a switch cannot go unnoticed.
+    params:
+      reasoning: {enabled: false}
+      temperature: 0.3
+      max_tokens: 200
+      provider: {only: [FILL_ME], allow_fallbacks: false}
 
   dashscope:
     base_url: FILL_ME           # the OpenAI-compatible endpoint of your provider (Qwen / Kimi / Zhipu)
@@ -49,9 +60,12 @@ match:
   max_dota_time: 600.0      # short debug match; a full 5v5 is 2400
   spend_limit_usd: 2.0      # reaching it ends the match at once
   log_dir: logs             # one <UTC timestamp>.jsonl per match: every request, reply, cost and latency
-  all_chat: true            # agents may add "say" to taunt. Write-only: the world state carries no chat,
+  all_chat: true            # agents may add a SAY line to taunt. Write-only: the world state carries no chat,
                             # so nobody can read or answer it, least of all the builtin bots
+  show_reason: true         # each hero's latest REASON over its health bar (85 Chinese characters at most);
+                            # only the game window (render) shows it
   share_team_state: true    # one line per teammate in every prompt; costs about 70 tokens a turn
+  history_length: 6         # each prompt ends with the agent's last 6 commands and where its hero stood
   render: false             # true opens the game window
 
 # agents[i] drives observation row i, which is info["player_ids"][i], which is the team's i-th player

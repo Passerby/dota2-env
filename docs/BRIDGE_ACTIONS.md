@@ -26,20 +26,23 @@ Gym 环境会替你生成这些；只有直接用 `dota2_env.bridge` 或想扩�
 | `DOTA_UNIT_ORDER_CAST_TARGET_TREE` | `castTree.{abilitySlot,tree}` |
 | `DOTA_UNIT_ORDER_CAST_NO_TARGET` | `cast.abilitySlot` |
 | `DOTA_UNIT_ORDER_CAST_TOGGLE` | `castToggle.abilitySlot` |
-| `DOTA_UNIT_ORDER_TRAIN_ABILITY` | `trainAbility.ability`（技能名） |
+| `DOTA_UNIT_ORDER_TRAIN_ABILITY` | `trainAbility.{ability,keep}`：技能名；技能点多于 `keep`（缺省 0）才加，自动加点用它给天赋留点 |
 | `DOTA_UNIT_ORDER_PURCHASE_ITEM` | `purchaseItem.itemName` |
-| `DOTA_UNIT_ORDER_PICKUP_RUNE` / `PICKUP_ITEM` / `DROP_ITEM` | `pickUpRune.rune` / `pickUpItem.itemId` / `dropItem.{slot,location}` |
-| `ACTION_CHAT` / `ACTION_COURIER` / `ACTION_SWAP_ITEMS` | `chat.{message,toAllchat}` / `courier.action` / `swapItems.{slotA,slotB}` |
+| `DOTA_UNIT_ORDER_PICKUP_RUNE` | `pickUpRune.location.{x,y}`：神符点的坐标，由服务器 VM 执行（见下） |
+| `DOTA_UNIT_ORDER_PICKUP_ITEM` / `DROP_ITEM` | `pickUpItem.itemId` / `dropItem.{slot,location}` |
+| `ACTION_CHAT` / `ACTION_COURIER` / `ACTION_SWAP_ITEMS` | `chat.{message,toAllchat}` / `courier.action`（`COURIER_ACTION_*` 常量名，如 `COURIER_ACTION_TAKE_AND_TRANSFER_ITEMS`） / `swapItems.{slotA,slotB}` |
+| `ACTION_LABEL` | `label.text`：放在 `extra_actions` 里，bot 跳过；服务器 VM 把它设成该玩家英雄的血条标签（`SetCustomHealthLabel`，最多 255 字节），直到下一条（[SERVER_VM.md](SERVER_VM.md) §5） |
 
 `trainAbility.ability` 除技能名外也接受 `"slot:N"`（按槽位加点，不依赖版本相关的技能名）。
-各种 `abilitySlot` 取负数就是物品：`-1` 是背包格 0，`-(k + 1)` 是背包格 k。
+各种 `abilitySlot` 取负数就是物品：`-1` 是背包格 0，`-(k + 1)` 是物品槽 k，TP 格 15 就是 `-16`（gym 的 `TP` 用它）。
 Lua 按技能 / 物品的施法方式（`behavior.lua`）替它补全目标，见 [FEATURES.md](FEATURES.md) 2.5、2.6：
 
 - `CAST_NO_TARGET` 一个需要目标的技能或物品：友方单位技能、药水对自己，吃树找最近的树，物品指向地点的放脚下。
 - `CAST_TARGET` 一个只能指地面的技能或物品：打在目标脚下（客户端会忽略这种技能的单位指令）。
 - `CAST_POSITION` 原样施放，gym 的 `CAST_DIRECTION` 就是用它下发的。
-- `CAST_VECTOR` 是唯一一条不由 bot 执行的主动作：bot 只 `Action_ClearActions(false)`；服务器 VM 里的
+- `CAST_VECTOR` 和 `PICKUP_RUNE` 两条主动作不由 bot 执行：bot 只 `Action_ClearActions(false)`；服务器 VM 里的
   `bridge/lua/server_actions.lua`（由 `cfg/dota2_env_server.cfg` 加载）每 tick `loadfile` 同一份动作文件，按 `dotaTime`
-  去重后，用 `ExecuteOrderFromTable` 先发 `VECTOR_TARGET_POSITION`（起点 + 100 × 方向）再发 `CAST_POSITION`（起点），
-  两条都带 `TargetIndex = 0`——这是引擎接受矢量指令的条件（[VERSION_DIFF.md](VERSION_DIFF.md) 3.1）。
+  去重后用 `ExecuteOrderFromTable` 下指令。矢量施法先发 `VECTOR_TARGET_POSITION`（起点 + 100 × 方向）再发 `CAST_POSITION`（起点），
+  两条都带 `TargetIndex = 0`——这是引擎接受矢量指令的条件（[VERSION_DIFF.md](VERSION_DIFF.md) 3.1）。捡神符是在点位 400 以内找最近的
+  `dota_item_rune` 实体，对它发 `PICKUP_RUNE`：bot API 的 `Action_PickUpRune(RUNE_POWERUP_2)` 在 6937 上走错点或不动（3.2）。
 每个动作文件必须包含被控玩家的一条主动作（什么都不做就发 `DOTA_UNIT_ORDER_NONE`），否则 Lua 不会把该文件标记为已执行，`extra_actions` 会每 tick 重复执行。

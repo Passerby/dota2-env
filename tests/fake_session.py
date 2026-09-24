@@ -10,6 +10,7 @@ from dota2_env.bridge.constants import (
     TEAM_DIRE,
     TEAM_RADIANT,
     UNIT_TYPE_BUILDING,
+    UNIT_TYPE_COURIER,
     UNIT_TYPE_FORT,
     UNIT_TYPE_HERO,
     UNIT_TYPE_LANE_CREEP,
@@ -19,8 +20,9 @@ from dota2_env.bridge.protos.dota_gcmessages_common_bot_script_pb2 import (
     CMsgBotWorldState,
 )
 from dota2_env.bridge.session import ActionDelivery
+from dota2_env.game_text import load_records
 from dota2_env.map_features import LANDMARKS, MAP_RADIUS, RUNE_SPOTS, RUNE_STATUS_AVAILABLE, load_map
-from dota2_env.observation import TEAM_SIZE
+from dota2_env.observation import STASH_SLOTS, TEAM_SIZE, TP_SLOT
 
 HERO_HANDLE, ENEMY_HERO_HANDLE, ENEMY_CREEP_HANDLE, ALLY_CREEP_HANDLE = 1, 2, 10, 11
 HERO_DAMAGE = 50
@@ -33,6 +35,12 @@ CAST_SLOTS: dict[int, tuple[str, tuple[str, ...]]] = {
 
 
 RUNE_STATUS_MISSING = 2
+COURIER_HANDLE = 20
+# Shadow Fiend's talents in their client slots, 7-14 on 6937 (necromastery, the innate skill, sits in 6)
+TALENT_IDS = [
+    load_records('abilities')[name]['id'] for name in load_records('heroes')['npc_dota_hero_nevermore']['talents']
+]
+TALENT_SLOT = 7
 OUTPOST_HANDLES = {'outpost_top': 700, 'outpost_bottom': 701}
 # The static tree nearest the fake hero's start whose four cells no other tree covers, for the tree tests.
 TREE_OFFSETS = load_map().tree_cells.mean(axis=1) - load_map().cell(-1500.0, -1400.0)
@@ -100,7 +108,12 @@ class FakeSession:
         self.kills = 0
         self.deaths = 0
         self.hero_hidden = False  # like a freshly respawned hero on current clients
-        self.hero_flags = {}  # extra fields of our hero unit, e.g. is_silenced
+        self.hero_flags = {}  # fields of our hero unit, e.g. is_silenced, level or reliable_gold
+        self.learned_talents = set()  # talent indices, as the TALENT action counts them
+        self.tp = None  # (charges, cooldown) of the scroll in the TP slot; None leaves the slot empty
+        self.stash = []  # item ids waiting in the stash
+        self.courier_items = []  # item ids the courier carries
+        self.courier_alive = True
         self.cast_slots = {0: dict(CAST_SLOTS)}
         self.feed_ended = False
         self.winner = None
@@ -132,23 +145,19 @@ class FakeSession:
         if self.hero_hidden:
             return ws
 
-        hero = _add_unit(
-            ws,
-            HERO_HANDLE,
-            UNIT_TYPE_HERO,
-            TEAM_RADIANT,
-            'npc_dota_hero_nevermore',
-            *self.hero_xy,
-            health=500,
-            player_id=0,
-            attack_damage=HERO_DAMAGE,
-            attack_range=500,
-            level=1,
-            mana=200,
-            mana_max=200,
-            last_hits=self.last_hits,
-            ability_points=1,
+        fields = {
+            'player_id': 0,
+            'attack_damage': HERO_DAMAGE,
+            'attack_range': 500,
+            'level': 1,
+            'mana': 200,
+            'mana_max': 200,
+            'last_hits': self.last_hits,
+            'ability_points': 1,
             **self.hero_flags,
+        }
+        hero = _add_unit(
+            ws, HERO_HANDLE, UNIT_TYPE_HERO, TEAM_RADIANT, 'npc_dota_hero_nevermore', *self.hero_xy, 500, **fields
         )
         for slot in range(6):
             hero.abilities.add(
@@ -160,6 +169,37 @@ class FakeSession:
                 cast_range=SKILL_CAST_RANGE if slot == 0 else 0,
             )
         hero.items.add(handle=250, ability_id=44, slot=0, charges=3, is_fully_castable=True)  # a tango
+        for index, talent_id in enumerate(TALENT_IDS):
+            level = int(index in self.learned_talents)
+            hero.abilities.add(handle=230 + index, ability_id=talent_id, slot=TALENT_SLOT + index, level=level)
+        scroll = load_records('items')['item_tpscroll']['id']
+        if self.tp is not None:
+            charges, cooldown = self.tp
+            castable = cooldown == 0
+            hero.items.add(
+                handle=260,
+                ability_id=scroll,
+                slot=TP_SLOT,
+                charges=charges,
+                cooldown_remaining=cooldown,
+                is_fully_castable=castable,
+            )
+        for slot, item_id in zip(STASH_SLOTS, self.stash, strict=False):  # a stash holds six at most
+            hero.items.add(handle=270 + slot, ability_id=item_id, slot=slot, charges=1)
+        courier = _add_unit(
+            ws,
+            COURIER_HANDLE,
+            UNIT_TYPE_COURIER,
+            TEAM_RADIANT,
+            'npc_dota_courier',
+            -6841,
+            -6841,
+            6 * self.courier_alive,
+            6,
+            player_id=0,
+        )
+        for slot, item_id in enumerate(self.courier_items):
+            courier.items.add(ability_id=item_id, slot=slot, charges=1)
         _add_unit(
             ws,
             ENEMY_HERO_HANDLE,
@@ -204,8 +244,8 @@ class FakeSession:
         if self.ack_status != 'executed':
             return
         action = actions[0]
-        if action['actionType'] == 'DOTA_UNIT_ORDER_MOVE_DIRECTLY':
-            location = action['moveDirectly']['location']
+        if action['actionType'] == 'DOTA_UNIT_ORDER_MOVE_TO_POSITION':
+            location = action['moveToLocation']['location']
             self.hero_xy = [location['x'], location['y']]
             self.hero_hidden = False
         elif action['actionType'] == 'DOTA_UNIT_ORDER_ATTACK_TARGET':
@@ -357,8 +397,8 @@ class Fake5v5Session:
             return
         for action in actions:
             row = action['player']
-            if action['actionType'] == 'DOTA_UNIT_ORDER_MOVE_DIRECTLY':
-                location = action['moveDirectly']['location']
+            if action['actionType'] == 'DOTA_UNIT_ORDER_MOVE_TO_POSITION':
+                location = action['moveToLocation']['location']
                 self.hero_xy[row] = [location['x'], location['y']]
                 self.hidden_heroes.discard(row)
             elif action['actionType'] == 'DOTA_UNIT_ORDER_ATTACK_TARGET':

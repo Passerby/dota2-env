@@ -56,6 +56,7 @@ class DotaMid1v1Env(gym.Env):
         rules=None,
         starting_items=DEFAULT_STARTING_ITEMS,
         ability_priority=DEFAULT_ABILITY_PRIORITY,
+        restock_tp=True,
         step_timeout=20.0,
         replay_dir=None,
         keep_files=False,
@@ -67,7 +68,10 @@ class DotaMid1v1Env(gym.Env):
                      None or "ansi" run the headless dedicated server. "ansi" makes `render()` return text.
         opponent:    "builtin" (Valve's default bot AI) or "idle".
         starting_items / ability_priority: bought / levelled automatically; pass () to do it yourself
-                     through `queue_purchase` and `queue_train_ability`.
+                     through `queue_purchase` and `queue_train_ability`. A skill point per talent tier
+                     the hero has reached is kept back for the agent's TALENT action.
+        restock_tp:  buy a Town Portal Scroll whenever the hero has none left; away from the shop it
+                     waits in the stash for the COURIER action.
         step_timeout: seconds without a new world state before the episode is truncated with `info["error"]`.
         replay_dir:  record the match and move the .dem there on close(), e.g. "replays";
                      a relative path lands under the current working directory. None records nothing.
@@ -85,6 +89,7 @@ class DotaMid1v1Env(gym.Env):
         self.rules = rules or Mid1v1Rules()
         self.starting_items = tuple(starting_items)
         self.ability_priority = tuple(ability_priority)
+        self.restock_tp = restock_tp
         self._session_factory = session_factory
         self._session_kwargs = {
             'team_id': team_id,
@@ -147,8 +152,9 @@ class DotaMid1v1Env(gym.Env):
         extra_actions += delivery.lost_extra_actions
         delivery.lost_extra_actions = []
         hero = self._observation.hero
-        if hero is not None and hero.ability_points > 0:
-            extra_actions += [actions.train_ability(self._player_id, f'slot:{slot}') for slot in self.ability_priority]
+        if hero is not None:
+            courier = self._observation.courier
+            extra_actions += actions.upkeep(self._player_id, hero, courier, self.ability_priority, self.restock_tp)
         self._session.act(self._world_state.dota_time, [bridge_action], extra_actions)
 
         previous = self._world_state
@@ -184,7 +190,7 @@ class DotaMid1v1Env(gym.Env):
 
     def render(self):
         if self.render_mode == 'ansi' and self._world_state is not None:
-            return describe(self._world_state, self.team_id, self._player_id, self.cast_slots())
+            return describe(self._world_state, self.team_id, self._player_id, self.cast_slots(), trees=self.trees)
         return None
 
     def close(self):
@@ -206,6 +212,13 @@ class DotaMid1v1Env(gym.Env):
     def queue_chat(self, message, all_chat=True):
         """Say `message` with the next step; `all_chat` False keeps it inside the team."""
         self._pending_extra_actions.append(actions.chat(self._player_id, message, all_chat))
+
+    def queue_label(self, text: str) -> None:
+        """Show text over our hero's health bar from the next step on, until another label replaces it.
+
+        Only a game window (render_mode "human") shows it; see docs/SERVER_VM.md.
+        """
+        self._pending_extra_actions.append(actions.label(self._player_id, text))
 
     def ability_names(self):
         """{slot: ability name} of our hero as reported by the running client (empty until lua has started)."""

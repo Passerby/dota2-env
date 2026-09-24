@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 import gymnasium as gym
@@ -18,14 +19,13 @@ import numpy as np
 from dotenv import load_dotenv
 
 import dota2_env  # noqa: F401  (registers the environments)
+from dota2_env.actions import team_action_space
 from dota2_env.llm.agent import system_prompt
-from dota2_env.llm.config import load_match
+from dota2_env.llm.config import Mode, load_match
 from dota2_env.llm.gateway import Gateway
 from dota2_env.llm.runner import TeamRunner
 from dota2_env.observation import team_player_ids
 from dota2_env.rewards import AllPick5v5Rules, Mid1v1Rules
-
-ACTION_KEYS = ('type', 'move', 'target', 'ability')
 
 
 def make_env(match, render_mode):
@@ -70,15 +70,19 @@ def hero_views(info, mode, team_id, rows):
 
 def pack(hero_actions, mode):
     if mode == 'allpick5v5':
-        return {key: np.array([action[key] for action in hero_actions], np.int64) for key in ACTION_KEYS}
+        return {
+            key: np.array([action[key] for action in hero_actions], space.dtype)
+            for key, space in team_action_space.spaces.items()
+        }
     return hero_actions[0]
 
 
-def say(env, mode, row, message):
+def queue_for_hero(queue: Callable[..., None], mode: Mode, row: int, text: str) -> None:
+    """Call an env's queue_chat or queue_label: the 5v5 env takes the hero row first, the 1v1 env has one hero."""
     if mode == 'allpick5v5':
-        env.unwrapped.queue_chat(row, message)
+        queue(row, text)
     else:
-        env.unwrapped.queue_chat(message)
+        queue(text)
 
 
 def dry_run(match):
@@ -95,9 +99,12 @@ def dry_run(match):
         print(f'\n--- team {team.team_id} control={team.control} ---')
         for row, config in enumerate(team.agents):
             prompt = system_prompt(config, match, team.team_id)
+            # Note (ruidu): about a token per Chinese character and one per 3 characters of the rest; tokenizers differ.
+            chinese = sum(1 for char in prompt if '\u4e00' <= char <= '\u9fff')
             print(
                 f'  [{row}] {config.nickname} {config.hero} {config.position} via {config.gateway} '
-                f'every {config.decision_interval}s  system prompt {len(prompt)} chars (~{len(prompt) // 3} tokens)'
+                f'every {config.decision_interval}s  system prompt {len(prompt)} chars '
+                f'(~{chinese + (len(prompt) - chinese) // 3} tokens)'
             )
         if team.control != 'agent':
             print(f'  heroes: {", ".join(team.heroes)}')
@@ -138,10 +145,14 @@ def main():
                 # the 1v1 env reports {index: slot}; hero_blocks wants it keyed by player id, as 5v5 reports it
                 if match.mode == 'mid1v1':
                     slots = {player_ids[0]: slots}
-                hero_actions, chat = runner.decide(info['world_state'], masks, player_ids, slots)
+                hero_actions, chat, reasons = runner.decide(
+                    info['world_state'], masks, player_ids, slots, env.unwrapped.trees
+                )
                 for row, message in chat:
-                    say(env, match.mode, row, message)
+                    queue_for_hero(env.unwrapped.queue_chat, match.mode, row, message)
                     print(f'[{runner.slots[row].config.nickname}] {message}')
+                for row, reason in reasons:
+                    queue_for_hero(env.unwrapped.queue_label, match.mode, row, reason)
                 _, _, terminated, truncated, info = env.step(pack(hero_actions, match.mode))
                 if step % 100 == 0:
                     print(

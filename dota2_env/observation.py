@@ -20,6 +20,7 @@ from gymnasium import spaces
 from dota2_env.bridge.constants import (
     TEAM_DIRE,
     TEAM_RADIANT,
+    UNIT_TYPE_COURIER,
     UNIT_TYPE_CREEP_HERO,
     UNIT_TYPE_FORT,
     UNIT_TYPE_HERO,
@@ -28,6 +29,7 @@ from dota2_env.bridge.constants import (
     UNIT_TYPE_TOWER,
 )
 from dota2_env.bridge.protos.dota_gcmessages_common_bot_script_pb2 import CMsgBotWorldState
+from dota2_env.game_text import load_records
 from dota2_env.map_features import (
     LANDMARK_FEATURES,
     LANDMARKS,
@@ -45,6 +47,12 @@ TEAM_SIZE = 5
 N_TOWERS = 11  # three per lane plus the two guarding the ancient
 N_ABILITIES = 6
 N_ITEM_SLOTS = 6  # the inventory; items in the backpack or the stash cannot be used
+TP_SLOT = 15  # the Town Portal Scroll has an item slot of its own
+STASH_SLOTS = range(9, 15)  # what is bought away from the shop waits here for the courier
+N_TALENTS = 8
+# Note (ruidu): talents 2k and 2k + 1 form tier k, and taking one closes the other (measured on 6937,
+# docs/VERSION_DIFF.md 3.2); the client's CanAbilityBeUpgraded says yes to all eight from level 10 on.
+TALENT_LEVELS = (10, 15, 20, 25)
 UNIT_RADIUS = 1600.0
 MAP_SIDE = 2 * MAP_RADIUS + 1
 RESPAWN_LOCATION = {TEAM_RADIANT: (-6700.0, -6700.0), TEAM_DIRE: (6900.0, 6650.0)}
@@ -83,6 +91,9 @@ HERO_FEATURES = (
     'is_attacking',
     'dota_time',
     'time_of_day',
+    'tp_charges',
+    'tp_cooldown',
+    'stash_items',
 )
 ABILITY_FEATURES = ('level', 'cooldown', 'castable')
 ITEM_FEATURES = ('item_id', 'charges', 'cooldown', 'castable')
@@ -110,6 +121,7 @@ observation_space = spaces.Dict(
         'hero': spaces.Box(-np.inf, np.inf, (len(HERO_FEATURES),), np.float32),
         'abilities': spaces.Box(-np.inf, np.inf, (N_ABILITIES, len(ABILITY_FEATURES)), np.float32),
         'items': spaces.Box(-np.inf, np.inf, (N_ITEM_SLOTS, len(ITEM_FEATURES)), np.float32),
+        'talents': spaces.Box(-np.inf, np.inf, (N_TALENTS,), np.float32),
         'units': spaces.Box(-np.inf, np.inf, (MAX_UNITS, len(UNIT_FEATURES)), np.float32),
         'unit_mask': spaces.MultiBinary(MAX_UNITS),
         'local_map': spaces.Box(-np.inf, np.inf, (len(MAP_FEATURES), MAP_SIDE, MAP_SIDE), np.float32),
@@ -126,12 +138,19 @@ class Observation:
     origin: tuple[float, float] | None = None  # (x, y) that MOVE actions start from; None when the hero cannot move
     unit_handles: list = field(default_factory=list)
     units: list = field(default_factory=list)  # CMsgBotWorldState.Unit for every row of the unit table
+    courier: CMsgBotWorldState.Unit | None = None  # the hero's own, which COURIER sends
 
 
 def team_player_ids(world_state, team_id):
     """Player ids of team_id, ascending. Row i of a team observation is the i-th of them, and in
     the 1v1 setup the first one is the lane player (every other slot holds an idle filler hero)."""
     return sorted(player.player_id for player in world_state.players if player.team_id == team_id)
+
+
+def lane_players(world_state: CMsgBotWorldState) -> set[int]:
+    """The two 1v1 lane players, the first of each team; -fill_with_bots parks idle wisps in both fountains."""
+    both = (team_player_ids(world_state, TEAM_RADIANT), team_player_ids(world_state, TEAM_DIRE))
+    return {ids[0] for ids in both if ids}
 
 
 def find_hero(world_state, team_id, player_id=None):
@@ -169,8 +188,34 @@ def hero_items(hero):
     return [by_slot.get(slot) for slot in range(N_ITEM_SLOTS)]
 
 
+def hero_talents(hero: CMsgBotWorldState.Unit) -> list[tuple[str, bool]]:
+    """(name, learned) of each of the hero's talents, tier by tier; empty for a hero the game data lacks.
+
+    The order is heroes.json's, which is the client's slot order, and the action's talent index.
+    """
+    record = load_records('heroes').get(hero.name)
+    if record is None:
+        return []
+    abilities = load_records('abilities')
+    learned = {ability.ability_id for ability in hero.abilities if ability.level > 0}
+    return [(name, abilities[name]['id'] in learned) for name in record['talents'][:N_TALENTS]]
+
+
+def open_talent_tiers(talents: list[tuple[str, bool]], level: int) -> list[int]:
+    """The tiers a hero of this level has reached without taking either of their two talents."""
+    return [
+        tier
+        for tier, unlock in enumerate(TALENT_LEVELS)
+        if level >= unlock
+        and talents[2 * tier : 2 * tier + 2]
+        and not any(has for _, has in talents[2 * tier : 2 * tier + 2])
+    ]
+
+
 def hero_vector(world_state, hero):
     facing = math.radians(hero.facing)
+    items = {item.slot: item for item in hero.items}
+    tp = items.get(TP_SLOT)
     return np.array(
         [
             hero.location.x / MAP_SCALE,
@@ -198,6 +243,9 @@ def hero_vector(world_state, hero):
             float(hero.HasField('attack_target_handle') and hero.attack_target_handle != 0xFFFFFFFF),
             world_state.dota_time / 600.0,
             world_state.time_of_day,
+            tp.charges / 10.0 if tp is not None else 0.0,
+            min(tp.cooldown_remaining, 100.0) / 10.0 if tp is not None else 0.0,
+            float(sum(slot in items for slot in STASH_SLOTS)),
         ],
         dtype=np.float32,
     )
@@ -251,13 +299,14 @@ def build_observation(
                 min(item.cooldown_remaining, 100.0) / 10.0,
                 float(item.is_fully_castable),
             )
+    for index, (_, learned) in enumerate(hero_talents(hero)):
+        arrays['talents'][index] = float(learned)
     if trees is not None:
         arrays.update(map_arrays(trees, world_state, team_id, hero.location.x, hero.location.y))
 
     nearby = []
     if hero_players is None:
-        both = (team_player_ids(world_state, TEAM_RADIANT), team_player_ids(world_state, TEAM_DIRE))
-        hero_players = {ids[0] for ids in both if ids}
+        hero_players = lane_players(world_state)
     for unit in world_state.units:
         if unit.handle == hero.handle or not unit.is_alive or unit.unit_type not in OBSERVED_UNIT_TYPES:
             continue
@@ -299,6 +348,14 @@ def build_observation(
         origin=(hero.location.x, hero.location.y) if hero.is_alive else None,
         unit_handles=[u.handle for _, u in nearby],
         units=[u for _, u in nearby],
+        courier=next(
+            (
+                unit
+                for unit in world_state.units
+                if unit.unit_type == UNIT_TYPE_COURIER and unit.team_id == team_id and unit.player_id == hero.player_id
+            ),
+            None,
+        ),
     )
 
 
@@ -321,6 +378,7 @@ team_observation_space = spaces.Dict(
         'heroes': spaces.Box(-np.inf, np.inf, (TEAM_SIZE, len(HERO_FEATURES)), np.float32),
         'abilities': spaces.Box(-np.inf, np.inf, (TEAM_SIZE, N_ABILITIES, len(ABILITY_FEATURES)), np.float32),
         'items': spaces.Box(-np.inf, np.inf, (TEAM_SIZE, N_ITEM_SLOTS, len(ITEM_FEATURES)), np.float32),
+        'talents': spaces.Box(-np.inf, np.inf, (TEAM_SIZE, N_TALENTS), np.float32),
         'units': spaces.Box(-np.inf, np.inf, (TEAM_SIZE, MAX_UNITS, len(UNIT_FEATURES)), np.float32),
         'unit_mask': spaces.MultiBinary((TEAM_SIZE, MAX_UNITS)),
         'local_map': spaces.Box(-np.inf, np.inf, (TEAM_SIZE, len(MAP_FEATURES), MAP_SIDE, MAP_SIDE), np.float32),
@@ -349,6 +407,7 @@ def build_team_observation(
         arrays['heroes'][row] = observation.arrays['hero']
         arrays['abilities'][row] = observation.arrays['abilities']
         arrays['items'][row] = observation.arrays['items']
+        arrays['talents'][row] = observation.arrays['talents']
         arrays['units'][row] = observation.arrays['units']
         arrays['unit_mask'][row] = observation.arrays['unit_mask']
         arrays['local_map'][row] = observation.arrays['local_map']

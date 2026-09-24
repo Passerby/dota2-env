@@ -8,8 +8,12 @@ launch flag / env parameter / timing constant (keep both in sync when
 changing `launch_args`, `config_auto`, the `*_FEATURES` tuples or an env's `__init__`),
 `docs/VERSION_DIFF.md` for what differs on current Dota clients, `docs/MAP_DATA.md` for where
 `dota2_env/data/` (map, item and ability data) comes from and how to refresh it,
-and `docs/IPC_CHANNELS.md` for why the Python <-> Lua channel is files and not the bot VM's `CreateHTTPRequest`
-(measured; re-run `scripts/probe_http.py` before reopening that question).
+`docs/IPC_CHANNELS.md` for why the Python <-> Lua channel is files and not the bot VM's `CreateHTTPRequest`
+(measured; re-run `scripts/probe_http.py` before reopening that question), `docs/SERVER_VM.md` for what the
+server VM (the custom-game VScript VM) can do in a normal match - chat, game events, scenario setup, pause - and
+how to dump its full API for the installed client (`scripts/probe_server_vm.py --dump-api`), and
+`docs/REFERENCES.md` for related work (who else has LLMs play real-time games - Brood War Bench is the closest -
+and how this harness differs; surveyed 2026-09-23).
 `AGENTS.md` is the coding style contract - read it before writing Python here, and run its
 review checklist over your own diff.
 
@@ -23,8 +27,9 @@ uv pip install -e ".[dev]"
 .venv/bin/python examples/llm_match.py --config configs/match.example.yaml --dry-run   # LLM match, config only
 .venv/bin/python scripts/probe_worldstate.py --seconds 120       # raw bridge compatibility probe
 .venv/bin/python -u scripts/extract_map.py --vrf ~/.cache/dota2_env/vrf-20.0/Source2Viewer-CLI --patch 7.41f  # map.json, real Dota
-.venv/bin/python -u scripts/fetch_game_text.py                   # items / abilities / heroes .json, ~30 min cold
+.venv/bin/python -u scripts/fetch_game_text.py                   # items / abilities / heroes .json, ~30 min cold, reads the installed client too
 .venv/bin/python -u scripts/probe_trees.py                       # map.json tree ids == tree_events ids, real Dota
+.venv/bin/python -u scripts/probe_server_vm.py                   # server VM: chat, events, scenario, pause; --dump-api PATH
 ```
 
 - Real-Dota runs need Steam running. Prefer headless (`render_mode=None`, `-dedicated`); only one instance at a time.
@@ -60,12 +65,35 @@ uv pip install -e ".[dev]"
   `DOTA_UNIT_ORDER_CAST_VECTOR` instead, the bot only clears its queue, and `bridge/lua/server_actions.lua` issues the two
   orders from the server VM with `TargetIndex = 0` (`docs/VERSION_DIFF.md` 3.1 has the measurements and the failed
   variants). That script gets into the server VM through `<dota>/game/dota/cfg/dota2_env_server.cfg` (`+servercfgfile`);
-  a `+script_reload_code` on the launch line is silently lost.
+  a `+script_reload_code` on the launch line is silently lost. The same script turns `ACTION_LABEL` extra actions
+  (the LLM's REASON, `queue_label`) into the heroes' health bar labels (`SetCustomHealthLabel`, set once, drawn by
+  the client; per-tick `DebugDrawText` shook in a game window); the bots skip them. It also carries out
+  `PICKUP_RUNE` (the bot only clears its queue), aimed at the rune entity lying at the spot: the bot API's
+  `Action_PickUpRune(RUNE_POWERUP_2)` goes to the wrong rune or nowhere on 6937 (`docs/VERSION_DIFF.md` 3.2).
+- `TP`, `TALENT` and `COURIER` need no Lua report: the TP slot (15), the stash (9-14), the courier (a unit whose
+  `player_id` is its owner's) and the talents (hero.abilities by id, `observation.hero_talents`) all come from the world
+  state. Talent tiers are checked in python (`TALENT_LEVELS`, pairs 2k / 2k + 1), because the client's
+  `CanAbilityBeUpgraded` says yes to every talent from level 10 on and then silently refuses; the automatic skill
+  points (`actions.upkeep`) keep one back per open tier, through the `keep` of `DOTA_UNIT_ORDER_TRAIN_ABILITY`.
 - Client quirks the env works around (hidden hero after respawn, feed stops at match end) are documented in
   `docs/VERSION_DIFF.md`; re-verify them with a real run before removing the workarounds.
 - `dota2_env/llm/` is the LLM match harness and is deliberately not re-exported from `dota2_env/__init__.py`:
-  it needs the optional `[llm]` extra (pyyaml, httpx) and the environments must stay installable without it.
+  it needs the optional `[llm]` extra (pyyaml, httpx, jinja2) and the environments must stay installable without it.
   It reaches the envs only through plain data (world state, per-hero masks, player ids), which is what will
-  let a second team be driven later. Decision cadence is counted in game seconds; a reply is read once into a
-  plan of `plan_length` actions and resolved one per frame, because legality and unit rows belong to the frame
-  an order goes out on, not the frame the model saw - see `docs/LLM_MATCH.md`.
+  let a second team be driven later. Decision cadence is counted in game seconds; a reply is plain text, one
+  action per line (`MOVE, x, y` / `MOVE, D` told apart by the count of numbers, `agent.FORMS`; a point goes out as
+  the env's `MOVE_TO`, which the client paths to) and a last `REASON, ...` line. It is streamed: each finished line
+  joins the plan at once, the first one replacing what is left of the last plan, and steps are resolved one per
+  frame, because legality and unit rows belong to the frame an order goes out on, not the frame the model saw - see
+  `docs/LLM_MATCH.md`.
+- Prompt text names heroes, skills, items and map spots with the client's official words (`dota2_env/game_text.py`
+  for the data files, the name tables at the top of `text.py`, `LABELS` in `game_text.py`); do not type names in by
+  hand. The system prompt (the hero's skills included) is built once per match so prefix caches keep hitting;
+  anything that changes goes in the user message, the held-item notes first because they change least
+  (`docs/LLM_MATCH.md` §8).
+- The wording of both LLM messages lives in the Jinja templates `dota2_env/llm/prompts/system.jinja` and
+  `user.jinja`; `agent.system_prompt()` / `agent.user_prompt()` only hand them data (configs, names, numbers, the
+  rendered state block). Change wording in a template, never by assembling sentences from Python strings. The
+  environment uses `StrictUndefined`, so a misspelt variable fails the tests instead of dropping a sentence, and
+  `tests/test_llm.py` pins both messages' layout; `text.py` / `game_text.py` stay Python because the env's ansi
+  render uses them and the env must not need jinja2.

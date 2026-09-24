@@ -13,11 +13,13 @@ from dota2_env.text import describe
 class FlatActionWrapper(gym.ActionWrapper):
     """MultiDiscrete([type, move, target, ability]) instead of a Dict, for libraries without Dict actions.
 
-    1v1 only: the 5v5 action space is already MultiDiscrete, one column per hero."""
+    1v1 only: the 5v5 action space is already MultiDiscrete, one column per hero. The types from MOVE_TO on are
+    left out: MOVE_TO and TP need a point, which no MultiDiscrete carries, and cutting there keeps the rest's
+    numbers."""
 
     def __init__(self, env):
         super().__init__(env)
-        self.action_space = spaces.MultiDiscrete([len(ActionType), N_MOVE_DIRECTIONS, MAX_UNITS, N_CAST_SLOTS])
+        self.action_space = spaces.MultiDiscrete([ActionType.MOVE_TO, N_MOVE_DIRECTIONS, MAX_UNITS, N_CAST_SLOTS])
 
     def action(self, action):
         action_type, move, target, ability = (int(value) for value in action)
@@ -39,7 +41,8 @@ class FlatObservationWrapper(gym.ObservationWrapper):
 
 class TextWrapper(gym.Wrapper):
     """For LLM agents: observations are text, actions are JSON strings (or dicts) such as
-    {"type": "ATTACK", "target": 3}, {"type": "MOVE", "move": 4}, {"type": "CAST_DIRECTION", "ability": 0, "move": 2}.
+    {"type": "ATTACK", "target": 3}, {"type": "MOVE_TO", "point": [1180, -1216]}, {"type": "MOVE", "move": 4},
+    {"type": "CAST_DIRECTION", "ability": 0, "move": 2}.
 
     Unparseable or illegal actions become NOOP and are reported in `info["action_error"]`.
     1v1 only; the 5v5 env renders its own per-hero text through render().
@@ -52,7 +55,7 @@ class TextWrapper(gym.Wrapper):
 
     def _text(self, info):
         base = self.env.unwrapped
-        return describe(info['world_state'], base.team_id, cast_slots=base.cast_slots())
+        return describe(info['world_state'], base.team_id, cast_slots=base.cast_slots(), trees=base.trees)
 
     def reset(self, **kwargs):
         _, info = self.env.reset(**kwargs)

@@ -162,8 +162,9 @@ faulting thread 24: HLTVServerAsync
   信使信息要从 `units` 里取。
 - **符文** ✅：`rune_infos` 的 4 个点位就是 2 个强化神符点和 2 个赏金神符点（开局 type=-1、status=2 即 MISSING）；
   `RUNE_BOUNTY_3/4` 已返回 (0,0,0)。经验神符 7.38 起换成了智慧神龛（`npc_dota_xp_fountain`，中立建筑）；
-  bot API 新增 `RUNE_WATER`=7、`RUNE_XP`=8、`RUNE_SHIELD`=9 三种类型常量。
-- **物品**：TP 固定在物品槽位 15 ✅。⚠️ 旧的固定出装路线（`nevermore.py`）和禁用物品规则需要对照新版物品表重新核对。
+  bot API 新增 `RUNE_WATER`=7、`RUNE_XP`=8、`RUNE_SHIELD`=9 三种类型常量。刷新那一刻 status 不需要视野就变成
+  AVAILABLE，本队看到那里空了才变回来（[MAP_DATA.md](MAP_DATA.md) 4.6）。
+- **物品**：TP 固定在物品槽位 15 ✅，储藏处是物品槽 9-14 ✅（见 3.2）。⚠️ 旧的固定出装路线（`nevermore.py`）和禁用物品规则需要对照新版物品表重新核对。
 - **物品使用** ✅（2026-09，1v1 headless）：Lua 的 `GetItemInSlot():GetName()`、`GetBehavior()` 和
   `ABILITY_BEHAVIOR_*` 常量都能用。按施法方式对自己用：仙灵火、治疗药膏、净化药水、吃树（一塔旁）、假眼都生效；
   树枝放脚下在一塔旁能种、在泉水里种不出来，往前 150 放也种不出来；圆环（被动）什么都不发生。
@@ -255,13 +256,58 @@ OrderType / TargetIndex / AbilityIndex / Position / Queue`（二进制里的键�
 都不用改仓库里的 Lua。用 `GetBot():GetUnitName()` 选中英雄，按阶段调 bot API，逐 think 打印 `GetLocation()` / `GetFacing()`（滚滚挥砍时的
 朝向就是矢量方向）和 `GetLinearProjectiles()`（法球的位置和速度）。有界面时控制台开 `dota_ability_debug 1` 免冷却。
 
+## 3.2 回城卷轴、神符、天赋、信使（2026-09 实测，ClientVersion 6937）
+
+先用探针（bot VM 里换上探针 bot 脚本，服务器 VM 负责摆场景：刷新冷却、`FindClearSpaceForUnit` 挪英雄、`HeroLevelUp` 升级）
+在 1v1（gamemode 21）和 5v5（gamemode 1）无头、4 倍速下测 bot API，再用 5v5 环境的 gym 动作把 `TP`、`PICKUP_RUNE`、
+`TALENT`、`COURIER` 和回城卷轴补买从头到尾跑了一遍 ✅。
+
+**回城卷轴** ✅
+- 每个英雄出生时 TP 格（物品槽 15）有 1 张 `item_tpscroll`。1v1 在 -90 秒就能用；5v5 在 -88 秒还有 98 秒冷却。
+- `Action_UseAbilityOnLocation(GetItemInSlot(15), 点)`：持续施法 3 秒（`IsChanneling()` 为 true），然后传送；
+  用掉最后一张后 TP 格就空了，冷却 80 秒。
+- 落点：目标点离友方建筑不超过 800 就正好落在目标点（中路一塔外 600 的点，落点分毫不差）；更远就落在离目标点最近的
+  友方建筑朝目标方向 800 处（对 (0, 0) 施放，落在 (-953, -869)，正好是中路一塔 (-1544, -1408) 外 800）；
+  直接指一塔的坐标，落在塔边约 210 处。短时间里第二次传到同一座塔，持续施法明显变长（和卷轴说明一致）。
+
+**购买、储藏处、信使** ✅
+- 在泉水 `ActionImmediate_PurchaseItem('item_tpscroll')`：叠进 TP 格（1 张变 2 张）。在野外买：进储藏处，worldstate 里是
+  物品槽 9；英雄回到泉水时自动挪进 TP 格。
+- `ActionImmediate_Courier(信使, COURIER_ACTION_TAKE_AND_TRANSFER_ITEMS)`：信使从储藏处取回物品，约 24 秒飞了 7,700，
+  把卷轴放进 TP 格，然后自己飞回泉水（`GetCourierState` 1 在基地 → 3 运送中 → 4 返回 → 1）。常量值：`RETURN`=0、
+  `RETURN_STASH_ITEMS`=2、`TAKE_STASH_ITEMS`=3、`TRANSFER_ITEMS`=4、`BURST`=5、`TAKE_AND_TRANSFER_ITEMS`=6。
+  每队 `GetNumCouriers()` = 5，`GetCourier(i)` 是第 i 个玩家的。
+- 运送途中卷轴既不在英雄身上也不在储藏处，而在 worldstate 里信使单位（`unit_type=11`，`player_id` 是主人）的 `items` 里。
+
+**神符** ✅
+- `RUNE_POWERUP_1/2`、`RUNE_BOUNTY_1/2` 的值是 0-3，顺序正好是 `RUNE_SPOTS`（上路强化、下路强化、上路赏金、下路赏金）。
+- 1v1 中路模式 0:00 不刷神符（四个点都是 MISSING）。5v5：0:00 四个点**都**刷赏金神符（type 5，两个强化神符点也是）；
+  2:00 两个强化神符点都刷圣水神符（type 7 = `RUNE_WATER`）。0:00 没人捡的赏金神符会一直留在强化神符点上，和 2:00 的
+  圣水神符同时躺着（两个 `dota_item_rune` 实体）；上路那个圣水神符离点位 90。
+- bot API 的 `Action_PickUpRune(n)`：n = 0（上路强化）和 3（下路赏金）正常，捡到后 +80 蓝 / +40 金；**n = 1（下路强化）
+  不可用**：0:00 英雄站在神符旁原地不动，2:00 英雄走过神符、一路跑向上路强化神符点，两次都一样。n = 2 没测。
+- 服务器 VM 的 `ExecuteOrderFromTable({OrderType = DOTA_UNIT_ORDER_PICKUP_RUNE, TargetIndex = 神符实体})` 能捡到下路强化神符点的
+  圣水神符。环境的 `PICKUP_RUNE` 现在全部这样下发（`bridge/lua/server_actions.lua`）。用 gym 动作实测：0:00 四个点依次各捡一次
+  赏金神符，每次 +44 金（40 加上自然增长），捡完那个点变成 MISSING；下路强化神符点 2:00 的圣水神符 +87 蓝。
+
+**天赋** ✅
+- 影魔的槽 7-14 是 8 个天赋，顺序和 `heroes.json` 的 `talents` 一致；槽 15 是 `special_bonus_attributes`（最多 7 级），
+  16-19 是 `ability_capture`、`abyssal_underlord_portal_warp`、`twin_gate_portal_warp`、`ability_lamp_use`。
+  worldstate 的 `abilities` 里带着这些槽和等级。
+- 10 级时 8 个天赋的 `CanAbilityBeUpgraded()` 都是 true，`GetHeroLevelRequiredToUpgrade()` 都是 10，但
+  `ActionImmediate_LevelAbility` 实际只收一层里的一个：10 级学槽 9 被拒；学了 8 之后 7 被拒；15、20、25 级分别学 10、11、14 后，
+  9、12、13 被拒。所以分层是 (7, 8)、(9, 10)、(11, 12)、(13, 14) 对应 10、15、20、25 级。被拒不扣技能点，也不报错。
+- 用 gym 动作实测：升到 10 级后自动加点留下 1 点，`TALENT` 学了第 [1] 个天赋，技能点归零，这一层随之关闭。
+- `special_bonus_attributes` 在 10 级时 `ActionImmediate_LevelAbility` 被拒；服务器的 `HeroLevelUp` 一路升到 25 级时它自己涨到了
+  7 级（扣技能点）。正常升级会不会这样没测 ⚠️。
+
 ## 4. Python 层
 
 | | 旧仓库 | dota2-env |
 |---|---|---|
 | Python | 3.8 | 3.10+（实测 3.12） |
 | protobuf | 3.x 生成码 | protoc 29 生成码 + 运行时 7.x |
-| 依赖 | tensorflow 2.3、psutil、PyYAML | 仅 protobuf（PyYAML 和 httpx 回到了可选的 `[llm]` extra，只有 LLM 对局配置用） |
+| 依赖 | tensorflow 2.3、psutil、PyYAML | 仅 protobuf（PyYAML 和 httpx 回到了可选的 `[llm]` extra，只有 LLM 对局配置用；同一个 extra 里还有渲染 LLM prompt 的 Jinja2） |
 | 路径 | 全部相对 CWD，游戏路径写在 `play_with_human_local.py` 顶部，`dota_game.py` 反向 import 它 | 包内定位 Lua；`DOTA_GAME_PATH` 环境变量或默认 Steam 路径 |
 | 接口 | 手写 `Dota2Env.reset/step`，返回原始 protobuf | `gymnasium.Env`：Dict 观测/动作空间、action mask、reward、terminated/truncated，通过 `check_env` |
 | 动作文件写入 | 直接写，靠 Lua 端容错；JSON 里有引号/反斜杠会破坏 Lua 字符串 | 先写临时文件再 `os.replace` 原子替换；对 `\` 和 `'` 转义 |
@@ -279,7 +325,8 @@ OrderType / TargetIndex / AbilityIndex / Position / Queue`（二进制里的键�
    (d) 如果 Valve 一直不修，又确实需要回看，改成录 worldstate 流（每帧 `CMsgBotWorldState` 落盘，
        用 `text.py` 的 `describe()` 当文本回放）——这条一定可用，但看不到画面。
 2. ~~导出物品价格~~ 已完成：`dota2_env/data/items.json` / `abilities.json` / `heroes.json`（中英文，
-   `scripts/fetch_game_text.py`，见 [MAP_DATA.md](MAP_DATA.md)）。还剩禁用物品规则。
+   `scripts/fetch_game_text.py`，见 [MAP_DATA.md](MAP_DATA.md)），含合成配方和神秘商店标记，并接进了
+   LLM 的 prompt（本英雄技能进 system，身上物品进 user，见 [LLM_MATCH.md](LLM_MATCH.md) §8）。还剩禁用物品规则。
 3. ~~重新导出地图 gridnav / 高度~~ 已完成：`dota2_env/data/map.json`（`scripts/extract_map.py`），并接进了观测
    （`local_map` / `runes` / `landmarks`）。`tree_events` 跟着本队视野走（迷雾里的变化再次看到时带 `delayed` 补报），
    种树枝不产生事件（见 MAP_DATA.md 4.5）。后续：发芽的事件、前哨被占领后 `team_id` 是否跟着变还没验证。

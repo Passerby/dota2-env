@@ -15,9 +15,10 @@ packages = ["dota2_env"]
 
 [project.optional-dependencies]
 # pyyaml was dropped when this repo was extracted (docs/VERSION_DIFF.md); it is back for the LLM match
-# config only, which is why the environments themselves still install with protobuf, gymnasium, numpy.
-llm = ["pyyaml>=6", "httpx>=0.27", "python-dotenv>=1.0"]
-dev = ["pytest", "ruff>=0.16", "pre-commit", "pyyaml>=6", "httpx>=0.27", "python-dotenv>=1.0"]
+# config only, and jinja2 renders the LLM prompts, which is why the environments themselves still install
+# with protobuf, gymnasium, numpy.
+llm = ["pyyaml>=6", "httpx>=0.27", "python-dotenv>=1.0", "jinja2>=3.1"]
+dev = ["pytest", "ruff>=0.16", "pre-commit", "pyyaml>=6", "httpx>=0.27", "python-dotenv>=1.0", "jinja2>=3.1"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

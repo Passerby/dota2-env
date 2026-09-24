@@ -2,10 +2,13 @@
 -- server activates) loads it with script_reload_code; it then reads the same bots/actions_t<team> files as the
 -- bots and runs the actions a bot cannot issue itself.
 --
--- Today that is the vector cast: a vector skill's second point travels as a VECTOR_TARGET_POSITION order ahead
+-- One is the vector cast: a vector skill's second point travels as a VECTOR_TARGET_POSITION order ahead
 -- of the cast order, and the bot API has no such order. ExecuteOrderFromTable delivers it as long as
 -- TargetIndex is 0: the table parser defaults it to -1, and the order executor drops a vector order whose
--- target is neither 0 nor a live entity (docs/VERSION_DIFF.md 3.1).
+-- target is neither 0 nor a live entity (docs/VERSION_DIFF.md 3.1). Another is ACTION_LABEL: the text becomes the
+-- hero's custom health bar label, which only the server VM can set (docs/SERVER_VM.md 5). The third is a rune
+-- pickup: on 6937 the bot's Action_PickUpRune(RUNE_POWERUP_2) walks to the other power rune or nowhere, so the
+-- order goes out here, aimed at the rune entity lying at the spot (docs/VERSION_DIFF.md 3.2).
 local dkjson = require('game/dkjson')
 
 -- a file younger than this is left for a later tick, as the bots do, so both VMs pick it up together
@@ -14,6 +17,8 @@ local executed = {}  -- team -> dotaTime of the file last run
 local JOIN_INTERVAL = 1.0
 local SPECTATOR_TEAM = 1  -- DOTA_TEAM_SPECTATOR, which the server VM does not define
 local last_join = -math.huge
+-- a rune lies up to 90 from its spot (the 2:00 water rune on top, measured); rune spots are 2,000+ apart
+local RUNE_REACH = 400
 
 local function cast_vector(action)
     local hero = PlayerResource:GetSelectedHeroEntity(action.player)
@@ -41,6 +46,25 @@ local function cast_vector(action)
     ExecuteOrderFromTable(order)
 end
 
+-- A spot can hold two runes at once: a bounty rune nobody took at 0:00 stays on a power rune spot next to the
+-- 2:00 water rune. The one nearest the spot goes first; the next PICKUP_RUNE takes the other.
+local function pickup_rune(action)
+    local hero = PlayerResource:GetSelectedHeroEntity(action.player)
+    if hero == nil or not hero:IsAlive() then
+        return
+    end
+    local spot = action.pickUpRune.location
+    local rune = Entities:FindByClassnameNearest('dota_item_rune', Vector(spot.x, spot.y, 0), RUNE_REACH)
+    if rune ~= nil then
+        ExecuteOrderFromTable({
+            UnitIndex = hero:entindex(),
+            OrderType = DOTA_UNIT_ORDER_PICKUP_RUNE,
+            TargetIndex = rune:entindex(),
+            Queue = false,
+        })
+    end
+end
+
 local function run_team(team)
     local chunk = loadfile('bots/actions_t' .. team)
     if chunk == nil then
@@ -54,6 +78,19 @@ local function run_team(team)
     for _, action in ipairs(data.actions) do
         if action.actionType == 'DOTA_UNIT_ORDER_CAST_VECTOR' then
             cast_vector(action)
+        elseif action.actionType == 'DOTA_UNIT_ORDER_PICKUP_RUNE' then
+            pickup_rune(action)
+        end
+    end
+    -- Note (ruidu): the label is a networked string of the hero that the client draws over the health bar itself,
+    -- so it is set once and moves with the hero. DebugDrawText, drawn again every think at the hero's server
+    -- position, shook and flickered in a game window, worst while the hero walked (docs/SERVER_VM.md 5).
+    for _, action in ipairs(data.extra_actions and data.extra_actions.actions or {}) do
+        if action.actionType == 'ACTION_LABEL' then
+            local hero = PlayerResource:GetSelectedHeroEntity(action.player)
+            if hero ~= nil then
+                hero:SetCustomHealthLabel(action.label.text, 255, 255, 255)
+            end
         end
     end
 end
