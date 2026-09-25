@@ -134,6 +134,9 @@ class FakeSession:
     def observe(self, timeout):
         if self.feed_ended:
             raise queue.Empty
+        return [self.frame()]
+
+    def frame(self):
         ws = CMsgBotWorldState(team_id=self.team_id, dota_time=self.dota_time, game_state=DOTA_GAMERULES_STATE_PRE_GAME)
         self.dota_time += 0.2
         ws.players.add(player_id=0, team_id=TEAM_RADIANT, kills=self.kills, deaths=self.deaths, is_alive=True)
@@ -306,6 +309,12 @@ class Fake5v5Session:
         self.rune_types = {}  # RUNE_SPOTS name: the world state's rune type, -1 (unknown) where not given
         self.outpost_teams = {'outpost_top': TEAM_RADIANT, 'outpost_bottom': TEAM_DIRE}  # as a match starts
         self.tree_events = []  # (tree id, destroyed) to report with the next frame
+        self.frames_per_observe = 1  # more is a policy that fell behind: observe() hands over all of them
+        self.dead_rows = set()  # rows whose heroes are dead and not reported
+        self.row_deaths = [0] * TEAM_SIZE  # deaths of rows 1-4; row 0 counts self.deaths
+        self.enemy_kills = [0] * TEAM_SIZE  # kills of the enemy players, TEAM_SIZE + row
+        self.enemy_tower_standing = True
+        self.roshan_killer = None  # a player id: the next frame reports Roshan killed by it
         Fake5v5Session.instances.append(self)
 
     def start(self):
@@ -314,26 +323,35 @@ class Fake5v5Session:
     def observe(self, timeout):
         if self.feed_ended:
             raise queue.Empty
+        self.skipped_observations += self.frames_per_observe - 1
+        return [self.frame() for _ in range(self.frames_per_observe)]
+
+    def frame(self):
         ws = CMsgBotWorldState(team_id=self.team_id, dota_time=self.dota_time, game_state=DOTA_GAMERULES_STATE_PRE_GAME)
         self.dota_time += 0.2
         for row in range(TEAM_SIZE):
-            # only player 0 scores, so a test setting kills/deaths reads back the same number
-            kills, deaths = (self.kills, self.deaths) if row == 0 else (0, 0)
-            ws.players.add(player_id=row, team_id=TEAM_RADIANT, kills=kills, deaths=deaths, is_alive=True)
-            ws.players.add(player_id=TEAM_SIZE + row, team_id=TEAM_DIRE, is_alive=True)
+            # only player 0 kills, so a test setting kills/deaths reads back the same number
+            kills, deaths = (self.kills, self.deaths) if row == 0 else (0, self.row_deaths[row])
+            alive = row not in self.dead_rows
+            ws.players.add(player_id=row, team_id=TEAM_RADIANT, kills=kills, deaths=deaths, is_alive=alive)
+            ws.players.add(player_id=TEAM_SIZE + row, team_id=TEAM_DIRE, kills=self.enemy_kills[row], is_alive=True)
+        if self.roshan_killer is not None:
+            ws.roshan_killed_events.add(killer_player_id=self.roshan_killer)
+            self.roshan_killer = None
         for team, x, y in ((TEAM_RADIANT, -6000, -6000), (TEAM_DIRE, 6000, 6000)):
             name = f'npc_dota_{"goodguys" if team == TEAM_RADIANT else "badguys"}_fort'
             if self.ancient_health[team] > 0:
                 _add_unit(ws, ANCIENT_HANDLE[team], UNIT_TYPE_FORT, team, name, x, y, self.ancient_health[team], 4500)
         _add_unit(ws, 100, UNIT_TYPE_TOWER, TEAM_RADIANT, 'npc_dota_goodguys_tower1_mid', -1544, -1408, 1800)
-        _add_unit(ws, 101, UNIT_TYPE_TOWER, TEAM_DIRE, 'npc_dota_badguys_tower1_mid', 524, 652, 1800)
+        if self.enemy_tower_standing:
+            _add_unit(ws, 101, UNIT_TYPE_TOWER, TEAM_DIRE, 'npc_dota_badguys_tower1_mid', 524, 652, 1800)
         add_map_state(ws, self.available_runes, self.rune_types, self.outpost_teams, self.tree_events)
         if self.spawn_delay > 0:
             self.spawn_delay -= 1
             return ws
 
         for row in range(TEAM_SIZE):
-            if row in self.hidden_heroes:
+            if row in self.hidden_heroes or row in self.dead_rows:
                 continue
             x, y = self.hero_xy[row]
             hero = _add_unit(

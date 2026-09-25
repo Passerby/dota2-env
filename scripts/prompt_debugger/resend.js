@@ -17,11 +17,12 @@ function postJson(url, body, signal) {
   return fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal });
 }
 
-// The same nickname can be another hero, or have been told something else, in another transcript.
-const draftKey = () => `${context.log}/${context.entry.hero.key}`;
+// The same nickname can be another hero, or have been told something else, in another transcript; each channel of
+// an agent has a system prompt of its own.
+const draftKey = () => `${context.log}/${context.entry.hero.key}/${context.entry.channel}`;
 
-export async function rebuildSystem(hero) {
-  const response = await postJson('/api/system', { team: hero.team, nickname: hero.nickname });
+export async function rebuildSystem(hero, channel = 'act') {
+  const response = await postJson('/api/system', { team: hero.team, nickname: hero.nickname, channel });
   return response.json();
 }
 
@@ -84,14 +85,15 @@ export function show(next) {
   showSystem(entry.hero, info);
 }
 
-// The logged request of this hero when it went through that gateway, else the config's params for it.
+// The logged request of this channel when it went through that gateway, else the config's params for it.
 function fillParams(name) {
-  const header = context.entry.hero.header;
+  const { info } = context;
   const gateway = meta.gateways.find((candidate) => candidate.name === name);
+  const configured = context.entry.channel === 'act' ? info.config?.params : info.config?.think?.params;
   const params =
-    header?.gateway === name
-      ? { model: header.model, ...header.params }
-      : { model: gateway.model, ...gateway.params, ...(context.info.config?.params ?? {}) };
+    info.gateway === name && info.params
+      ? { model: info.model, ...info.params }
+      : { model: gateway.model, ...gateway.params, ...(configured ?? {}) };
   $('rs-gateway').value = name;
   paramsDefault = JSON.stringify(params, null, 2);
   $('rs-params').value = paramsDefault;
@@ -103,7 +105,7 @@ async function showSystem(hero, info) {
   if (!sources.has(key) && info.system !== null) sources.set(key, { text: info.system, from: '日志记录' });
   if (!sources.has(key) && info.config) {
     mark('rs-system-state', '按当前模板重建中…', false);
-    const result = await rebuildSystem(hero);
+    const result = await rebuildSystem(hero, info.channel);
     if (!context || draftKey() !== key) return;
     if (result.error) {
       $('rs-system').value = drafts.get(key) ?? '';
@@ -118,7 +120,7 @@ async function showSystem(hero, info) {
 
 async function rebuildIntoEditor() {
   const key = draftKey();
-  const result = await rebuildSystem(context.entry.hero);
+  const result = await rebuildSystem(context.entry.hero, context.entry.channel);
   if (!context || draftKey() !== key) return;
   if (result.error) {
     mark('rs-system-state', `重建失败：${result.error}`, false);
@@ -191,7 +193,9 @@ async function sendRound() {
   $('rs-results').prepend(round);
   const times = Number($('rs-count').value);
   const results = await Promise.all(
-    Array.from({ length: times }, (_, k) => sendOne(request, planLength || meta.plan_length, entry.record.reply, round, k + 1)),
+    Array.from({ length: times }, (_, k) =>
+      sendOne(request, planLength || meta.plan_length, entry.record.reply, round, k + 1, entry.channel),
+    ),
   );
   summary.textContent = summarize(results);
 }
@@ -219,7 +223,7 @@ function requestJson(request) {
   return JSON.stringify({ ...request.params, messages }, null, 2);
 }
 
-async function sendOne(request, planLength, original, round, number) {
+async function sendOne(request, planLength, original, round, number, channel) {
   const controller = new AbortController();
   const lines = [];
   const body = el('div', {});
@@ -253,15 +257,17 @@ async function sendOne(request, planLength, original, round, number) {
     for await (const event of readLines(response)) {
       if (event.reply) {
         reply = event.reply;
-      } else if (event.kind === 'step') {
+      } else if (event.kind === null) {
+        lines.push({ line: event.line, kind: 'skip' });
+      } else if (event.kind !== 'step' || channel !== 'act') {
+        lines.push({ line: event.line, kind: log.tagOf(event.line, channel) ?? 'unused' });
+      } else {
         steps += 1;
         lines.push(
           steps <= planLength
             ? { line: event.line, kind: 'step', n: steps, invalid: event.error }
             : { line: event.line, kind: 'extra' },
         );
-      } else {
-        lines.push({ line: event.line, kind: event.kind ?? 'skip' });
       }
       body.replaceChildren(renderLines(lines));
     }

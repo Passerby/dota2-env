@@ -1,0 +1,5 @@
+{# How an event the tracker saw (memory.Event) reads, in one line; import it with context, which has team_id. #}
+{% macro side_of(team) %}{{ '我方' if team == team_id else '敌方' }}{% endmacro %}
+{% macro event_text(event) %}
+{% if event.kind == 'death' %}{{ side_of(event.team) }}{{ event.name | unit_name }}阵亡{{ '，被' ~ (event.killer | unit_name) ~ '击杀' if event.killer else '' }}{{ '，在 (%.0f, %.0f)' | format(event.position[0], event.position[1]) if event.position else '' }}{% elif event.kind == 'tower' %}{{ side_of(event.team) }}{{ event.name | unit_name }}被摧毁{% elif event.kind == 'roshan' %}肉山被{{ side_of(event.team) }}{{ event.killer | unit_name if event.killer else '' }}击杀{% else %}{{ side_of(event.team) }}信使被击杀{{ '，被' ~ (event.killer | unit_name) ~ '击杀' if event.killer else '' }}{% endif %}
+{% endmacro %}

@@ -148,34 +148,22 @@ def frame(dota_time: float, tree_ids: list[int], units: int = 1) -> bytes:
     return world_state.SerializeToString()
 
 
-def test_observe_carries_tree_events_of_skipped_frames(tmp_path):
+def test_observe_hands_over_every_frame_since_the_last_call(tmp_path):
     dota_path = tmp_path / 'game'
     (dota_path / 'dota' / 'scripts' / 'vscripts').mkdir(parents=True)
     session = DotaSession(TEAM_RADIANT, dota_path=str(dota_path), session_root=str(tmp_path / 'sessions'))
     session._queue = queue.Queue()
     for raw in (frame(1.0, [1], units=3), frame(2.0, [2, 3], units=2), frame(3.0, [4])):
         session._queue.put(raw)
-    world_state = session.observe(timeout=1)
-    assert [event.tree_id for event in world_state.tree_events] == [1, 2, 3, 4]
-    assert world_state.dota_time == 3.0 and len(world_state.units) == 1  # everything else is the newest frame's
-    assert session.skipped_observations == 2
+    frames = session.observe(timeout=1)
+    assert [world_state.dota_time for world_state in frames] == [1.0, 2.0, 3.0]
+    assert [[event.tree_id for event in world_state.tree_events] for world_state in frames] == [[1], [2, 3], [4]]
+    assert session.skipped_observations == 2  # the frames a policy acting on the newest one did not act on
     session.close()
 
 
-def test_listener_carries_tree_events_of_dropped_frames(monkeypatch):
+def test_listener_forwards_every_playable_frame(monkeypatch):
     frames = [frame(1.0, [1]), frame(2.0, [2]), frame(3.0, [3], units=0), frame(4.0, [4])]
-
-    class FullOnce:
-        """qsize() answers 0, 2, 0: the second frame finds the queue full."""
-
-        def __init__(self):
-            self.sizes, self.items = [0, 2, 0], []
-
-        def qsize(self):
-            return self.sizes.pop(0)
-
-        def put(self, raw):
-            self.items.append(raw)
 
     def read(sock):
         if not frames:
@@ -184,9 +172,10 @@ def test_listener_carries_tree_events_of_dropped_frames(monkeypatch):
 
     monkeypatch.setattr(worldstate, 'connect', lambda port, **kwargs: None)
     monkeypatch.setattr(worldstate, 'read_raw_world_state', read)
-    forwarded = FullOnce()
+    forwarded = queue.Queue()
     with pytest.raises(EOFError):
         worldstate.worldstate_listener(12120, forwarded)
-    received = [worldstate.parse_world_state(raw) for raw in forwarded.items]
-    assert [[event.tree_id for event in ws.tree_events] for ws in received] == [[1], [2, 3, 4]]
-    assert received[1].dota_time == 4.0 and len(received[1].units) == 1
+    received = [worldstate.parse_world_state(forwarded.get_nowait()) for _ in range(forwarded.qsize())]
+    # the frame without units cannot be played; its tree events ride on with the next one
+    assert [[event.tree_id for event in ws.tree_events] for ws in received] == [[1], [2], [3, 4]]
+    assert received[2].dota_time == 4.0 and len(received[2].units) == 1

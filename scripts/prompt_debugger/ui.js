@@ -30,8 +30,29 @@ export function highlight(text, term) {
   return fragment;
 }
 
-const TAGS = { reason: '理由', say: '喊话', skip: '', extra: '多余', cut: '截断', unplanned: '未用' };
-const NOTES = { extra: '超出 plan_length，没执行', cut: '最后一行没写完，没执行', unplanned: '没进计划' };
+const TAGS = {
+  reason: '理由',
+  say: '喊话',
+  intent: '打算',
+  call: '呼叫',
+  ask: '请求',
+  plan: '计划',
+  goal: '目标',
+  note: '笔记',
+  forget: '删笔记',
+  lesson: '经验',
+  skip: '',
+  extra: '多余',
+  cut: '截断',
+  unplanned: '未用',
+  unused: '未用',
+};
+const NOTES = {
+  extra: '超出 plan_length，没执行',
+  cut: '最后一行没写完，没执行',
+  unplanned: '没进计划',
+  unused: '这个通道不认这一行',
+};
 
 // Reply lines as log.readReply or the resend stream tell them apart; rejected is why the frame refused a step,
 // invalid why a step is written like no action at all.

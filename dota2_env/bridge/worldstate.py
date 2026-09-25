@@ -63,12 +63,12 @@ def connect(port, host='127.0.0.1', timeout=None, retry_interval=1.0):
         time.sleep(retry_interval)
 
 
-def worldstate_listener(port: int, queue: Queue, max_queue_size: int = 2, only_actionable: bool = True) -> None:
-    """Child-process target: keep the socket drained and feed the newest states into queue.
+def worldstate_listener(port: int, queue: Queue, only_actionable: bool = True) -> None:
+    """Child-process target: keep the socket drained and put every frame into queue, oldest first.
 
     The queue carries serialized bytes (decode with parse_world_state), which is cheaper and
-    safer to pickle across processes than protobuf message objects. Tree events are deltas, so
-    those of a frame that is not forwarded ride along with the next one that is.
+    safer to pickle across processes than protobuf message objects. Frames before the game can be
+    played are left out; tree events are deltas, so theirs ride along with the next frame that is not.
     """
     sock = connect(port)
     carried = b''
@@ -86,12 +86,5 @@ def worldstate_listener(port: int, queue: Queue, max_queue_size: int = 2, only_a
         if only_actionable and not playing and world_state.game_state != DOTA_GAMERULES_STATE_POST_GAME:
             carried += tree_events_only(world_state)
             continue
-        # qsize() is not implemented on macOS.
-        try:
-            if queue.qsize() >= max_queue_size:
-                carried += tree_events_only(world_state)
-                continue
-        except NotImplementedError:
-            pass
         queue.put(carried + raw)
         carried = b''

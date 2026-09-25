@@ -45,6 +45,18 @@ gateways:
     # Turning thinking off has no standard switch - put your provider's own here, or per agent below.
     params: {temperature: 0.3, max_tokens: 200, enable_thinking: false}
 
+  # The long think: once a game minute or so, and when something big happens (docs/LLM_MATCH.md §11). It may
+  # think before it answers - a slower, stronger model is fine here, but at timescale 4 a game minute is only 15
+  # wall seconds, so a reply slower than that makes every plan older than it looks. max_tokens has to cover the
+  # thinking too, and the timeout the whole reply.
+  reasoner:
+    base_url: https://api.deepseek.com/v1
+    api_key: ${DEEPSEEK_API_KEY}
+    model: FILL_ME
+    price_per_mtok: {input: 0.0, output: 0.0}
+    timeout_seconds: 60.0
+    params: {temperature: 0.3, max_tokens: 4000}
+
   local:
     base_url: http://localhost:11434/v1   # Ollama; vLLM usually serves http://localhost:8000/v1
     api_key: not-needed
@@ -66,22 +78,29 @@ match:
                             # only the game window (render) shows it
   share_team_state: true    # one line per teammate in every prompt; costs about 70 tokens a turn
   history_length: 6         # each prompt ends with the agent's last 6 commands and where its hero stood
+  notes_limit: 8            # notes a long think keeps; a new one past it pushes the oldest out
+  call_seconds: 30.0        # game seconds a CALL stays on the team's blackboard
+  memory_dir: memory        # lessons across matches, one YAML file per hero: after the match every agent with a
+                            # think reviews it and adds lessons there, and the next match's long thinks read the
+                            # newest lessons_limit of them. Leave it out for no review and no lessons. Hand-edit freely.
+  lessons_limit: 10
   render: false             # true opens the game window
 
 # agents[i] drives observation row i, which is info["player_ids"][i], which is the team's i-th player
 # id ascending. The order here IS that mapping - reordering it reassigns heroes.
 # decision_interval is in GAME seconds: 0.2 = every frame at 5 Hz, 1.0 = once a second, 3.0 = every 3s.
 # It is an upper bound; a model slower than its interval simply decides less often and the hero holds
-# its last order in between.
+# its last order in between. think gives an agent a long think; without it the agent has the per-second
+# channel only, as before (the &think anchor just saves writing it five times).
 radiant:
   control: agent            # agent | builtin | idle
   agents:
-    - {nickname: Shadow, hero: npc_dota_hero_nevermore,      position: mid,          gateway: deepseek, decision_interval: 1.0}
-    - {nickname: Bullet, hero: npc_dota_hero_sniper,         position: safe,         gateway: deepseek, decision_interval: 1.0}
-    - {nickname: Blaze,  hero: npc_dota_hero_lina,           position: offlane,      gateway: deepseek, decision_interval: 3.0}
-    - {nickname: Hex,    hero: npc_dota_hero_lion,           position: support,      gateway: deepseek, decision_interval: 3.0}
-    - {nickname: Frost,  hero: npc_dota_hero_crystal_maiden, position: hard_support, gateway: deepseek, decision_interval: 3.0}
-      # per-agent params override the gateway's, e.g. {params: {reasoning_effort: none}}
+    - {nickname: Shadow, hero: npc_dota_hero_nevermore,      position: mid,          gateway: deepseek, decision_interval: 1.0, think: &think {gateway: reasoner, interval: 60.0}}
+    - {nickname: Bullet, hero: npc_dota_hero_sniper,         position: safe,         gateway: deepseek, decision_interval: 1.0, think: *think}
+    - {nickname: Blaze,  hero: npc_dota_hero_lina,           position: offlane,      gateway: deepseek, decision_interval: 3.0, think: *think}
+    - {nickname: Hex,    hero: npc_dota_hero_lion,           position: support,      gateway: deepseek, decision_interval: 3.0, think: *think}
+    - {nickname: Frost,  hero: npc_dota_hero_crystal_maiden, position: hard_support, gateway: deepseek, decision_interval: 3.0, think: *think}
+      # per-agent params override the gateway's, e.g. {params: {reasoning_effort: none}}, and a think takes its own
 
 # Phase 1: the client plays this side. Phase 2 (both teams LLM) is control: agent plus five agents here.
 # All Pick will not hand the same hero to both teams, so all ten names must differ.

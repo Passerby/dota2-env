@@ -216,10 +216,12 @@ world state 的 `tree_events` 只在树变化时出现，是增量，而且只�
 带 `delayed` 补报，见 4.5），所以每局维护一张树表（`map_features.TreeTable`）：开局全部站着，按 destroyed /
 respawned 事件改；同一事件重复出现不会重复计数；id 超出 `map.json` 的（临时树）忽略。
 
-增量最怕丢帧，而 bridge 有两处会丢：`worldstate_listener` 在队列满或帧不可行动时跳过，
-`DotaSession.observe()` 落后时直接跳到最新一帧。现在两处都会把被跳过那几帧的 `tree_events` 按顺序
-接到下一帧前面（protobuf 解析拼接的消息时，repeated 字段会按顺序合并），`observe()` 的接口不变。
-两个环境在 `reset()` 的等待循环里、`step()` 的每次 `observe()` 之后都会把帧喂给树表。
+增量最怕丢帧，所以 bridge 不丢帧：`worldstate_listener` 把每一帧可行动的帧都放进队列，`DotaSession.observe()`
+一次交出上次以来的全部帧，旧的在前。两个环境在 `reset()` 的等待循环里、`step()` 的每次 `observe()` 之后把这些帧
+逐一喂给树表，再把它们放进 `info["world_states"]`，LLM 对局的记忆（[LLM_MATCH.md](LLM_MATCH.md) §11）也逐帧读它们。
+只剩开局前不可行动的帧（没有单位）不往下传，它们的 `tree_events` 接到下一帧前面（protobuf 解析拼接的消息时，
+repeated 字段会按顺序合并）。以前队列里攒到 2 帧就丢、`observe()` 落后时只取最新一帧，丢掉的帧只补传树事件，
+击杀、肉山这些事件就没了。
 
 ## 6. 文本数据的格式
 

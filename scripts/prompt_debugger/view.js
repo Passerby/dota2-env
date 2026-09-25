@@ -147,9 +147,19 @@ function renderHeroes() {
 
 function renderTotals() {
   const { entries, rejected } = state.index;
+  const decisions = entries.filter((entry) => entry.channel === 'act').length;
   const errors = entries.filter((entry) => entry.record.error).length;
   const spent = entries.reduce((sum, entry) => sum + (entry.record.usd ?? 0), 0);
-  $('totals').textContent = `${entries.length} 次决策 · 出错 ${errors} · 被拒 ${rejected.length} · ${usd(spent)}`;
+  $('totals').textContent =
+    `${decisions} 次决策 · ${entries.length - decisions} 次长思考和复盘 · 出错 ${errors} · 被拒 ${rejected.length} · ${usd(spent)}`;
+}
+
+// What a row says: the reason of a decision, the plan of a long think, the lessons of a review, else the error.
+function gist(entry) {
+  const { record } = entry;
+  if (entry.channel === 'think') return record.plan ?? record.error ?? '';
+  if (entry.channel === 'review') return (record.lessons ?? []).map((lesson) => lesson.text).join('；') || record.error || '';
+  return record.reason || record.error || '';
 }
 
 function rowOf(entry) {
@@ -159,9 +169,10 @@ function rowOf(entry) {
     { dataset: { i: entry.i, rejected: entry.rejected.length }, class: entry.i === state.selected ? 'selected' : null },
     el('span', { class: 'time' }, log.clock(record.dota_time)),
     el('span', { class: 'who' }, record.nickname),
+    entry.channel === 'act' ? null : el('span', { class: 'badge think' }, log.CHANNEL_NAMES[entry.channel]),
     record.error ? el('span', { class: 'badge error' }, '错') : null,
     entry.rejected.length ? el('span', { class: 'badge rejected' }, `拒×${entry.rejected.length}`) : null,
-    el('span', { class: 'reason' }, record.reason || record.error || ''),
+    el('span', { class: 'reason' }, gist(entry)),
   );
 }
 
@@ -188,7 +199,7 @@ function select(i) {
   history.replaceState(null, '', `#log=${encodeURIComponent(state.name)}${i === null ? '' : `&d=${i}`}`);
   renderDetail();
   const entry = i === null ? null : state.index.entries[i];
-  const info = entry && log.heroInfo(entry.hero, state.meta);
+  const info = entry && log.heroInfo(entry.hero, state.meta, entry.channel);
   resend.show(entry && { log: state.name, entry, info, planLength: state.index.planLength });
 }
 

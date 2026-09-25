@@ -60,10 +60,11 @@ def main() -> None:
     try:
         session.start()
         while True:
-            world_state = session.observe(timeout=120)
-            table.update(world_state)
+            frames = session.observe(timeout=120)
+            for world_state in frames:
+                table.update(world_state)
             now = world_state.dota_time
-            for event in world_state.tree_events:
+            for event in (event for frame in frames for event in frame.tree_events):
                 known = event.tree_id < len(trees)
                 print(
                     f'{now:8.1f} tree {event.tree_id} destroyed={event.destroyed} respawned={event.respawned} '

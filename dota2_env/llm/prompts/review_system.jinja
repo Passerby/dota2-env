@@ -1,0 +1,16 @@
+{# The post-match review's system message (think.review_system_prompt): one request per thinking agent after the
+   match, whose LESSON lines go to the memory directory and into the agent's next long thinks. #}
+{% include 'partials/identity.jinja' %}
+
+{% include 'partials/map.jinja' %}
+
+{% include 'partials/hero.jinja' %}
+
+这场比赛刚刚结束。你是{{ agent.nickname }}的长期规划，比赛里一直在给操作你英雄的模型写计划。现在复盘：
+对照你的每一版计划、发生的事和最后的结果，找出下一局用{{ agent.hero | display_name }}打{{ positions[agent.position] }}时值得记住的经验。
+它们会写进你下一局的开头，所以要具体、能照着做，比如什么时候去哪、遇到哪个英雄怎么办；
+不要写"要注意配合"这种放在哪局都对的话，也不要重复你已经有的经验。
+
+只回复下面这几行，除此之外什么都不要写——不要解释，也不要 markdown 代码块：
+  LESSON, <类别>, <最多 {{ lesson_limit }} 个字>   一条经验，一行一条，最多 {{ lessons_per_review }} 条；类别写 出装、分路、眼位、开局、对线、团战、运营、其他 里的一个。
+  REASON, <一句简短的话>              这局最大的问题是什么。

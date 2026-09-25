@@ -1,0 +1,8 @@
+{# The hero's own skills in slot order and its talents tier by tier. #}
+{{ agent.hero | display_name }}的技能，按技能栏顺序（状态里 "abilities" 下写的是每条开头的内部名称）：
+{{ skills }}
+
+{{ agent.hero | display_name }}的天赋，{{ talent_levels | join('、') }} 级各开放一层，每层两个里只能学一个，学了不能换（TALENT, T 里的 T 是方括号里的编号）：
+{% for level in talent_levels %}
+{{ level }} 级：[{{ 2 * loop.index0 }}] {{ talents[2 * loop.index0] }}，或 [{{ 2 * loop.index0 + 1 }}] {{ talents[2 * loop.index0 + 1] }}
+{% endfor %}

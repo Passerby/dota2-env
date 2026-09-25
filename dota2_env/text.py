@@ -9,6 +9,7 @@ needs the game mode.
 
 import math
 import re
+from typing import NamedTuple
 
 import numpy as np
 
@@ -115,6 +116,12 @@ def tower_name(match: re.Match[str], language: Language) -> str:
     return (LANES[lane.replace('bot', 'bottom')][language] if lane else '') + TOWER_TIERS[tier][language]
 
 
+def unit_name(name: str, language: Language = 'zh') -> str:
+    """The client's name of a hero or a tower by its unit name: 斧王, 下路一塔."""
+    match = RE_TOWER.fullmatch(name)
+    return display_name(name, language) if match is None else tower_name(match, language)
+
+
 def spot_name(spot: str, language: Language = 'zh') -> str:
     """The client's name of a RUNE_SPOTS or LANDMARKS entry: power_top is 上路强化神符."""
     kind, side = spot.rsplit('_', 1)
@@ -157,6 +164,47 @@ def map_reference(language: Language = 'zh') -> list[str]:
         ]
         lines.append(f'{SPOT_GROUPS[group][language]}: ' + '; '.join(named))
     return lines
+
+
+class Wave(NamedTuple):
+    lane: str  # a key of LANES
+    ours: bool
+    count: int
+    health: float  # fraction of the wave's total
+    center: tuple[float, float]
+
+
+def creep_waves(world_state: CMsgBotWorldState, team_id: int) -> list[Wave]:
+    """Every wave of lane creeps the team sees, top lane first and each lane from the Radiant end.
+
+    Creeps of one side closer than WAVE_GAP are one wave, on the lane whose path of map.json passes nearest.
+    """
+    static = load_map()
+    creeps = [unit for unit in world_state.units if unit.unit_type == UNIT_TYPE_LANE_CREEP and unit.is_alive]
+    wave_of = list(range(len(creeps)))
+    for i, creep in enumerate(creeps):
+        for j, other in enumerate(creeps[:i]):
+            near = math.dist((creep.location.x, creep.location.y), (other.location.x, other.location.y)) < WAVE_GAP
+            if creep.team_id == other.team_id and near and wave_of[i] != wave_of[j]:
+                merged = wave_of[i]
+                wave_of = [wave_of[j] if wave == merged else wave for wave in wave_of]
+    waves = []
+    for wave in set(wave_of):
+        members = [creep for creep, of in zip(creeps, wave_of, strict=True) if of == wave]
+        center = np.mean([(creep.location.x, creep.location.y) for creep in members], axis=0)
+        # a wave is on the lane whose path passes nearest, as far along it as the path point nearest to it
+        gaps = {lane: np.hypot(*(path - center).T) for lane, path in static.lanes.items()}
+        lane = min(gaps, key=lambda name: gaps[name].min())
+        health = sum(creep.health for creep in members) / max(sum(creep.health_max for creep in members), 1)
+        found = Wave(
+            lane=lane.replace('bot', 'bottom'),
+            ours=members[0].team_id == team_id,
+            count=len(members),
+            health=health,
+            center=(float(center[0]), float(center[1])),
+        )
+        waves.append((('top', 'mid', 'bot').index(lane), int(np.argmin(gaps[lane])), found))
+    return [wave for *_, wave in sorted(waves)]
 
 
 def describe(
@@ -350,29 +398,12 @@ def describe(
             )
     lines.append('enemy heroes in sight: ' + ('; '.join(heroes) or 'none'))
 
-    creeps = [unit for unit in world_state.units if unit.unit_type == UNIT_TYPE_LANE_CREEP and unit.is_alive]
-    wave_of = list(range(len(creeps)))
-    for i, creep in enumerate(creeps):
-        for j, other in enumerate(creeps[:i]):
-            near = math.dist((creep.location.x, creep.location.y), (other.location.x, other.location.y)) < WAVE_GAP
-            if creep.team_id == other.team_id and near and wave_of[i] != wave_of[j]:
-                merged = wave_of[i]
-                wave_of = [wave_of[j] if wave == merged else wave for wave in wave_of]
-    waves = []
-    for wave in set(wave_of):
-        members = [creep for creep, of in zip(creeps, wave_of, strict=True) if of == wave]
-        center = np.mean([(creep.location.x, creep.location.y) for creep in members], axis=0)
-        # a wave is on the lane whose path passes nearest, as far along it as the path point nearest to it
-        gaps = {lane: np.hypot(*(path - center).T) for lane, path in static.lanes.items()}
-        lane = min(gaps, key=lambda name: gaps[name].min())
-        health = sum(creep.health for creep in members) / max(sum(creep.health_max for creep in members), 1)
-        side = 'ours' if members[0].team_id == team_id else 'enemy'
-        described = (
-            f'{LANES[lane.replace("bot", "bottom")][language]} {side} {len(members)} hp {100 * health:.0f}% '
-            f'at ({center[0]:.0f}, {center[1]:.0f}) dist {math.dist((x, y), center):.0f}'
-        )
-        waves.append((('top', 'mid', 'bot').index(lane), int(np.argmin(gaps[lane])), described))
-    lines.append('creep waves: ' + ('; '.join(described for *_, described in sorted(waves)) or 'none'))
+    waves = [
+        f'{LANES[wave.lane][language]} {"ours" if wave.ours else "enemy"} {wave.count} hp {100 * wave.health:.0f}% '
+        f'at ({wave.center[0]:.0f}, {wave.center[1]:.0f}) dist {math.dist((x, y), wave.center):.0f}'
+        for wave in creep_waves(world_state, team_id)
+    ]
+    lines.append('creep waves: ' + ('; '.join(waves) or 'none'))
 
     if trees is not None:
         # Note (ruidu): a lane is found by its towers; the outermost one still standing is where a hero

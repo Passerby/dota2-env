@@ -80,8 +80,9 @@ PICKUP_RUNE / TP / TALENT / COURIER）、
 
 **info**：`action_mask`（`type` / `attack_target` / `cast_target` / `ability` / `rune` / `talent` 六个 0/1 数组，`ability` 按动作类型分行，
 每个格子能用哪几种施法由 Lua 上报的施法类型决定）、`world_state`（原始
-`CMsgBotWorldState`）、`dota_time`、`reward`（各奖励分量，未加权）、`winner`、出错时 `error`；
-`action_delivery` / `skipped_observations`（动作是否被游戏执行、延迟多少、策略跳过了多少帧）。
+`CMsgBotWorldState`）、`world_states`（上一步以来的每一帧，旧的在前，最后一帧就是 `world_state`；记事件的人一帧都不能漏）、
+`dota_time`、`reward`（各奖励分量，未加权）、`winner`、出错时 `error`；
+`action_delivery` / `skipped_observations`（动作是否被游戏执行、延迟多少、有多少帧策略没来得及据以行动）。
 
 **奖励**（`LaningReward`，权重可传参覆盖）：正补、反补、升级、自身血量变化、敌方英雄血量变化、击杀、死亡、双方一塔血量、胜负。
 

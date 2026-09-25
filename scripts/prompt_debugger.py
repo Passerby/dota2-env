@@ -20,9 +20,10 @@ import jinja2
 from dotenv import load_dotenv
 
 from dota2_env.game_text import display_name, load_records
-from dota2_env.llm import agent
+from dota2_env.llm import agent, review, think
 from dota2_env.llm.config import MatchConfig, load_match
 from dota2_env.llm.gateway import Gateway, Reply
+from dota2_env.llm.memory import load_lessons
 from dota2_env.text import TEAMS
 
 PAGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'prompt_debugger')
@@ -74,7 +75,7 @@ class DebuggerHandler(BaseHTTPRequestHandler):
         if match is None:
             self.send_json({'error': 'the debugger was started without --config'}, 409)
         elif path == '/api/system':
-            self.send_system(match, request['team'], request['nickname'])
+            self.send_system(match, request['team'], request['nickname'], request.get('channel', 'act'))
         elif path == '/api/send':
             self.send_reply(request['gateway'], request['params'], request['system'], request['user'])
         else:
@@ -156,6 +157,9 @@ class DebuggerHandler(BaseHTTPRequestHandler):
                     'position': config.position,
                     'gateway': config.gateway,
                     'params': config.params,
+                    'think': None
+                    if config.think is None
+                    else {'gateway': config.think.gateway, 'params': config.think.params},
                 }
                 for team in (cls.match.radiant, cls.match.dire)
                 for config in team.agents
@@ -163,20 +167,33 @@ class DebuggerHandler(BaseHTTPRequestHandler):
             **names,
         }
 
-    def send_system(self, match: MatchConfig, team_id: int, nickname: str) -> None:
-        """The system prompt today's templates and the config give one agent."""
-        config = next((config for config in match.team(team_id).agents if config.nickname == nickname), None)
+    def send_system(self, match: MatchConfig, team_id: int, nickname: str, channel: str) -> None:
+        """The system prompt today's templates and the config give one agent's act, think or review channel."""
+        team = match.team(team_id)
+        config = next((config for config in team.agents if config.nickname == nickname), None)
         if config is None:
             self.send_json({'error': f'{nickname} is not an agent of team {team_id} in {self.config_path}'}, 404)
             return
+        if channel == 'think' and config.think is None:
+            self.send_json({'error': f'{nickname} has no think in {self.config_path}'}, 404)
+            return
         # Note (ruidu): a template caught half edited is the one failure expected here, so it goes back to the page.
         try:
-            system = agent.system_prompt(config, match, team_id)
+            if channel == 'think':
+                # the lessons the runner would read for it now, which can be newer than the match's
+                lessons = (
+                    [] if match.memory_dir is None else load_lessons(match.memory_dir, config.hero, match.lessons_limit)
+                )
+                system = think.think_system_prompt(config, match, team, lessons)
+            elif channel == 'review':
+                system = review.review_system_prompt(config, match, team_id)
+            else:
+                system = agent.act_system_prompt(config, match, team_id)
         except jinja2.TemplateSyntaxError as e:
-            self.send_json({'error': f'system.jinja line {e.lineno}: {e.message}'}, 400)
+            self.send_json({'error': f'{e.name} line {e.lineno}: {e.message}'}, 400)
             return
         except jinja2.TemplateError as e:
-            self.send_json({'error': f'system.jinja: {e.message}'}, 400)
+            self.send_json({'error': f'{channel} template: {e.message}'}, 400)
             return
         self.send_json({'system': system})
 

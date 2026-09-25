@@ -8,5 +8,6 @@ uv.lock
 configs/*.yaml
 !configs/match.example.yaml
 logs/
+memory/
 .env
 .claude/

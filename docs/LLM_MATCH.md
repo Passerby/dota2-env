@@ -54,6 +54,10 @@ Kimi 放在最后那个 choice 里面，这三种都认。一家网关在流里�
 | `show_reason` | true | 每份回复的 REASON 放在那个英雄的血条上方（服务器 VM 的 `SetCustomHealthLabel`，中文最多 85 个字），只有开窗口（`render`）才看得见，见 [SERVER_VM.md](SERVER_VM.md) §5 |
 | `share_team_state` | true | prompt 里附队友摘要，每轮约 70 token |
 | `render` | false | 开游戏窗口 |
+| `notes_limit` | 8 | 长思考最多留几条笔记，多了挤掉最旧的，见 §11 |
+| `call_seconds` | 30.0 | 黑板上一条 CALL 挂多少**游戏秒** |
+| `memory_dir` | 不设 | 跨局经验放在哪（每个英雄一个 YAML）；设了才会赛后复盘、长思考才会读经验，见 §11.5 |
+| `lessons_limit` | 10 | 长思考的 system 里带最新的几条经验 |
 
 ## 3. 两队
 
@@ -73,6 +77,7 @@ All Pick 不会把同一个英雄发给两边，所以**十个英雄名必须各
 | `gateway` | ✅ | 引用上面的某个 gateway |
 | `decision_interval` | 1.0 | **游戏秒**。0.2 = 每帧（5 Hz），3.0 = 每 3 秒 |
 | `params` | `{}` | 覆盖 gateway 的 `params` |
+| `think` | 不设 | 这个 agent 的长思考：`{gateway, interval: 60.0, params}`，`interval` 也是游戏秒；不设就只有每秒通道，和以前一样，见 §11 |
 
 `position` 写 `offlane` 而不是 `off`：YAML 里裸的 `off` 会被解析成布尔假。
 
@@ -119,6 +124,8 @@ system prompt 只让它用来短距离挪一下（躲技能、拉开距离）：
   不影响执行，但它是看懂模型在想什么最直接的东西。
 - `SAY, ...`：嘲讽，开了 `all_chat` 才发，一份回复只发第一条，最多 80 字符。REASON 和 SAY 后面跟的是中文，
   模型常把紧跟着的逗号写成全角，所以这两行的逗号写成 `，` 或冒号也认；动作行只认英文逗号。
+- `INTENT, ...`、`CALL, ...`、`ASK, ...`：打算、喊队友、请长思考重想，见 §11。长思考和复盘用的 `PLAN`、`GOAL`、`NOTE`、
+  `FORGET`、`LESSON` 在每秒通道的回复里不算动作，也不起作用。开头的词是哪些算标签、各留多少字，都在 `agent.TAGS`。
 - 其余每一行都是一个动作。多于 `plan_length` 的动作行丢掉，后面的 REASON / SAY 照读；少了就是计划短一点、
   早几帧进入 NOOP。
 
@@ -209,7 +216,12 @@ order，所以英雄会继续执行上一条命令（`clear.lua` 才是清空的
 `decided_at` 不晚于被拒时刻的最后一次决策。
 
 **`kind: "summary"`** —— 最后一行，每个 agent 的请求数 / 回复数 / 网络错 / 被拒动作数 /
-已执行的计划步数 / 持有帧数 / token / 花费 / 平均延迟。
+已执行的计划步数 / 持有帧数 / token / 花费 / 平均延迟；token 和花费是每秒通道和长思考合起来的，
+`thinks` / `think_errors` / `think_usd` / `think_mean_latency` 是长思考单独的。
+
+有长思考以后还多三种行，格式见 §11.6：`think`（每次长思考回复传完时一行）、`event`（记忆看到的事：阵亡、推塔、肉山、信使）、
+`review`（赛后复盘，每个 agent 一行）。`agent` 行多一个 `think` 字段（长思考的网关、模型、参数、间隔和 system prompt，
+没有长思考是 null），`decision` 行多 `intent`、`calls`、`ask`。
 
 怎么看——先跑这个，它把下面这些都算好了：
 
@@ -245,6 +257,8 @@ python scripts/prompt_debugger.py logs/<时间戳>.jsonl --config configs/my_mat
 然后打开它打印的 `http://127.0.0.1:8765`。
 
 - **左边**每次决策一行，可以按英雄、出错 / 被拒筛，也能在 prompt、回复、理由和错误里全文搜（命中的词在右边高亮）；j / k 切换。
+  长思考和复盘也各占一行，标着「长思考」「复盘」，行上是它的 PLAN 或经验；点开以后 system prompt 页签是那一层自己的，
+  重发也按那一层读行（§11）。
   勾上「跟随」每 2 秒读一次新写进来的记录，出现更新的日志文件就切过去，一边跑对局一边看。
 - **中间**是一次决策：
   - 回复逐行标注：计划的第几步、哪一步被拒以及原因、超出 `plan_length` 没执行的行、没写完的最后一行、理由、喊话。
@@ -256,13 +270,13 @@ python scripts/prompt_debugger.py logs/<时间戳>.jsonl --config configs/my_mat
   - 新回复流式逐行显示，照 runner 的读法标注，可以和原回复逐行对比。
   - 参数框就是请求体里除 messages 以外的全部，原样发出，gateway 自己的 params 不再另外合进去。
   - system prompt 的改动按日志和英雄保留，换一次决策还在，可以拿同一份改动连着试几个局面；
-    改了 `system.jinja` 点「按当前模板重建」就行，不用重启。
+    改了模板点「按当前模板重建」就行，不用重启。
 - 服务只绑 127.0.0.1，只回应自己的页面；key 留在 Python 进程里，页面拿不到。
 
 限制：
 
 - 重发只检查每行的格式。哪些动作合法取决于那一帧的 mask，日志里没有。
-- 改了 `user.jinja` 没法从日志重新渲染：日志只有渲染好的文字，没有 world state，只能在右边直接改文字。
+- 改了 `act_user.jinja` / `think_user.jinja` 没法从日志重新渲染：日志只有渲染好的文字，没有 world state，只能在右边直接改文字。
 - 旧日志的 system prompt 是按当前模板重建的，模板改过的话和当时发出的不一样。
 - 看不到模型的思考内容：gateway 只读 `content`，和对局里一样。
 - 重发花的是真钱，重发面板顶上累计这一页花了多少。
@@ -272,8 +286,10 @@ python scripts/prompt_debugger.py logs/<时间戳>.jsonl --config configs/my_mat
 每次决策发两条消息，不带对话历史（最近几条命令在 user 的最后，见下）。名字一律用客户端自己的官方中文（英雄、技能、物品来自 datafeed 的简体中文，
 神符点、地标、商店、标签来自客户端的 `dota_schinese.txt`），数据来源见 [MAP_DATA.md](MAP_DATA.md) §6。
 
-两条消息的措辞和版式都在 Jinja 模板里：[system.jinja](../dota2_env/llm/prompts/system.jinja) 和
-[user.jinja](../dota2_env/llm/prompts/user.jinja)。`agent.system_prompt()` / `agent.user_prompt()` 只把数据交给模板
+两条消息的措辞和版式都在 Jinja 模板里：[act_system.jinja](../dota2_env/llm/prompts/act_system.jinja) 和
+[act_user.jinja](../dota2_env/llm/prompts/act_user.jinja)（每秒通道；长思考和复盘各有自己的一对，见 §11），
+身份、地图和英雄技能三段放在 [partials/](../dota2_env/llm/prompts/partials/)，每一层的 system 都 include 它们，
+所以几层看到的英雄、地图、定时事件是同一份。`agent.act_system_prompt()` / `agent.act_user_prompt()` 只把数据交给模板
 （`agent` / `match` 两份配置、客户端的队伍和分路名、坐标表、技能说明、物品说明、状态块、队友、最近的命令），
 自己不拼句子，所以改措辞、调顺序、加减段落都只改模板。状态块、技能说明和物品说明是 `text.py` / `game_text.py`
 渲染好的整块文字：它们也是环境 `render_mode="ansi"` 的输出，环境不能依赖 jinja2，所以留在 Python 里。
@@ -495,3 +511,120 @@ token（改动前一局 744），输出 105（改动前 81）。所以输入大�
   token 和花费记成 0，`spend_limit_usd` 对它不起作用。DeepSeek、OpenRouter、Kimi 都报，通义、vLLM、Ollama
   认 `stream_options.include_usage`。换一家新网关先跑一小段，看 `check_match.py` 的汇总里 token 是不是 0。
 - 本文的 token 数基于 3 字符/token 的估计，没有用真实分词器量过。
+
+## 11. 长思考、黑板和记忆
+
+设计草案和流程图在 [LLM_AGENT_DESIGN.md](LLM_AGENT_DESIGN.md)，这一节写已经做出来的第一版。都只在假会话
+（`tests/fake_session.py`）上测过，还没上真客户端跑。
+
+### 11.1 两个通道
+
+- 每个 agent 有一个每秒通道（前面十节说的那个）；配置里写了 `think` 的，再有一个**长思考**通道。两个通道各跑在自己的
+  worker 线程里（`channel.py`），谁也不等谁，也都不挡游戏。
+- 长思考看的是全局（下面 §11.4），写的是计划：`PLAN` 一行字，加一个可选的目标点 `GOAL`。计划一到就放上队伍的黑板，
+  每秒通道下一轮的 user 里就有它。
+- 短思考没有单独的通道：每秒通道回复里的 `INTENT` 行就是它。打算变了才写，写了以后一直显示在自己之后的每一轮里，
+  也显示在队友的队友行后面，并交给自己的长思考看。
+- 长思考的请求也记在 `spend_limit_usd` 里（`TeamRunner.usd` 是两个通道合起来的）。
+
+### 11.2 什么时候想
+
+| 触发 | 说明 |
+|---|---|
+| 开局 | 第一帧就想一次，这时还在号角前 |
+| 定时 | 距上一次请求 `interval` 游戏秒（默认 60） |
+| 自己阵亡 | 死着的时候每秒通道不发请求；这一次想的是活过来以后做什么。买活还没做 |
+| 队友阵亡 | 看到队友的死亡计数加一 |
+| 塔倒了、肉山被杀 | 哪一方的都算 |
+| 有人喊你 | 队友的 `CALL` 点了你的名，或者喊全队；同一个人把同一句话再喊一遍只续期，不再叫醒 |
+| 每秒通道写了 `ASK` | 它觉得计划做不了、或者局面大变 |
+| 走到了目标点 | 从外面走进 `GOAL` 400 以内才算；`GOAL` 就在脚下不算 |
+
+一个 agent 同时只有一次长思考在飞。在飞的时候来的触发先攒着（最多 6 条），那一次回来马上再想，把攒下的一起告诉模型。
+复活不单独触发。实际周期是 max(`interval`, 延迟 × `timescale`)：timescale 4 下一个游戏分钟只有 15 墙钟秒，
+开思考的模型比这慢的话，计划到的时候已经旧了，`think` 记录的 `dota_time - decided_at` 就是旧了多少。
+
+### 11.3 回复里的行
+
+长思考（`think_system.jinja` 教的格式）：
+
+| 行 | 作用 |
+|---|---|
+| `PLAN, ...` | 这一版计划，最多 150 字；一到就是英雄的计划，不等后面的行。一份回复只认第一条 |
+| `GOAL, x, y` | 可选，计划的目标点；写在 PLAN 前面也行，等 PLAN 到了一起生效。每秒通道每轮都能看到自己离它多远 |
+| `NOTE, ...` | 可选，一条笔记，最多 60 字；和已有的一模一样就不再记。最多留 `notes_limit` 条，多了挤掉最旧的 |
+| `FORGET, n` | 可选，删掉这次 prompt 里第 n 条笔记 |
+| `CALL, 昵称或 全队, ...` | 可选，喊队友，和每秒通道的一样 |
+| `REASON, ...` | 理由，只进日志 |
+
+一份回复没有 PLAN（或者请求失败），上一版计划照旧；`GOAL` 写的不是两个数、`FORGET` 的编号不存在，都记在 `think` 记录的
+`problems` 里。
+
+每秒通道多了三种可选的行，都写在 REASON 前面：`INTENT, ...`（最多 40 字）、`CALL, 昵称或 全队, ...`（最多 40 字，
+名字对不上任何队友就当喊全队）、`ASK, ...`（只有配了长思考的 agent 的 system 会教它）。
+
+### 11.4 黑板、记忆和两层的 prompt（`memory.py`、`think.py`）
+
+- **黑板**（每队一块）：每人最新的计划、每人最新的 INTENT、还没过期的呼叫。同一个人对同一个对象只留最新一条呼叫，
+  `call_seconds` 游戏秒后过期。
+- **记忆**（`MemoryTracker`）逐帧读 `info["world_states"]`（环境不丢帧，见 [MAP_DATA.md](MAP_DATA.md) §5），调用方每步先
+  `runner.sense(info["world_states"])` 再 `runner.decide(...)`：
+  - 阵亡：`players` 里死亡计数加一。同一帧击杀数加一的如果正好一个英雄，记为凶手；敌方英雄没露过面也有名字（`players` 的 `hero_id`）。
+  - 塔倒了：上报塔的帧里少了一座塔（被摧毁的建筑不再上报）。兵营还不记，客户端对兵营的叫法还没进数据。
+  - 肉山被杀、信使被杀：world state 的逐帧事件，以前丢帧时会跟着丢。
+  - 敌方英雄最后一次被看到的时间、位置、等级和血量。
+  - 执行情况：从上一次长思考请求起走了多远（死着和没上报的那几帧不算）、在目标点 800 以内待了多久、离目标点最近多少、
+    阵亡几次；补刀和金钱的增量在 prompt 里现算。复活时间和 `net_worth` 没在真客户端上核对过，没用。
+- **长思考的 user**（`think_user.jinja`）依次是：这次想的原因；时间、阵营和击杀比；我方五个英雄（K/D/A、等级、血量、蓝量、
+  金钱、补刀、位置、物品，队友还带他们的计划和打算）；敌方英雄（看得见的写现在的位置，看不见的写多久以前在哪）；
+  双方还立着的塔和血量；兵线；接下来的定时事件；上次以来发生的事；给它的呼叫；上一版计划和执行情况；每秒通道这段时间
+  写下的打算和理由；笔记。
+- **长思考的 system**（`think_system.jinja`）：和每秒通道同一份身份、地图、英雄技能（`partials/`），然后是队伍名单、
+  往局经验（§11.5）、它的角色和回复格式。整局不变。
+- **每秒通道的 user** 多了几块：物品说明后面是计划和目标点（一分钟左右才变一次，前缀缓存还能盖住）；状态块后面一行
+  「计划进度」（定下多久、离目标点多远，由代码算）；队友行后面是他们的打算；「队友的呼叫」；最近的命令前面是自己的打算。
+
+### 11.5 赛后复盘和跨局经验（`review.py`）
+
+- 设了 `memory_dir` 才有。`examples/llm_match.py` 在对局正常收尾后（打完、到时间或花费上限）调 `review.review()`：
+  每个有长思考的 agent 发一次复盘请求，走它长思考的网关，最多等两倍的那个网关 `timeout_seconds`。
+- 复盘的 prompt 是 `review_system.jinja` / `review_user.jinja`：结果、它每一版计划、整局发生的事、最后的笔记、已有的经验。
+  它回 `LESSON, 类别, 经验`（最多 5 条，类别从出装、分路、眼位、开局、对线、团战、运营、其他里选）。
+- 经验追加到 `memory_dir/heroes/<英雄>.yaml`：
+
+  ```yaml
+  lessons:
+  - kind: 对线
+    text: 敌方斧王常从河道绕过来，看不到他时别压线
+    position: mid
+    match: 20260925T031012Z   # 这局日志的文件名，是这条经验的出处
+    source: review
+  ```
+
+  文件可以直接手改，下次追加前会重新读。下一局同一个英雄的长思考 system 里带最新的 `lessons_limit` 条。
+- 出装、眼位这些现在只是文字：开局之后环境除了补回城卷轴不会买东西，也没有专门插眼的动作（对眼 CAST 会放在脚下）。
+
+### 11.6 日志里的新行
+
+```jsonc
+{"kind": "think", "team": 2, "nickname": "Shadow", "dota_time": 75.2,
+ "triggers": ["timer"],             // 这次为什么想：start / timer / death / teammate_death / tower / roshan / call / ask / goal
+ "decided_at": 60.0, "latency": 11.8, "first_line_latency": 9.6, "input_tokens": 6100, "output_tokens": 900, "usd": 0.003,
+ "reply": "PLAN, ...\nGOAL, 1180, -1216\n...", "plan": "推掉中路一塔……", "goal": [1180, -1216],
+ "notes": ["..."], "forgotten": [], "calls": [], "reason": "...", "problems": [], "error": null}
+{"kind": "event", "team": 2, "event": "death", "dota_time": 312.4, "side": 2,   // side：阵亡英雄、倒掉的塔所属的一方
+ "name": "npc_dota_hero_nevermore", "killer": "npc_dota_hero_axe", "position": [-1200.0, -900.0]}
+{"kind": "review", "team": 2, "nickname": "Shadow", "dota_time": 600.1, "decided_at": 600.1, "latency": 20.3,
+ "reply": "LESSON, 对线, ...", "lessons": [{"kind": "对线", "text": "...", "position": "mid",
+ "match": "20260925T031012Z", "source": "review"}], "reason": "...", "error": null}
+```
+
+开了 `log_prompts` 的话，`think` 和 `review` 也带 `prompt`。`scripts/check_match.py` 会报长思考的次数、延迟、旧了多少、
+被什么触发、没带计划的回复和计划样本，以及打算、呼叫、事件和经验的条数。
+
+### 11.7 还没做的
+
+- 买活：Lua 已经有 `DOTA_UNIT_ORDER_BUYBACK`，world state 有 `buyback_cost` / `buyback_cooldown`，Python 这边还没有动作，
+  谁来决定也还没定（设计草案 §4）。
+- 出装和购买、插眼到指定点、队长模式、独立的短思考通道、长思考期间暂停游戏：见设计草案 §6、§7。
+- 所有这些都还没在真客户端上跑过：阵亡和击杀的计数、塔的上报、肉山事件、`hero_id` 对应的英雄名，都要一局实跑核对。

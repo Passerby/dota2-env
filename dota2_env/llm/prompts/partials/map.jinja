@@ -1,0 +1,32 @@
+{# The map: orientation, the fixed places in the coordinates of pos, and when runes, shrines and lotuses come. #}
+{# when() writes the times and spots of events.json entries: "4:00 起每 4 分钟在上路赏金神符、下路赏金神符各刷一个". #}
+{% macro when(entries, each, one) %}{% for entry in entries %}{% if entry.every %}{{ entry.first | clock }} 起每 {{ '%g' | format(entry.every / 60) }} 分钟{% else %}{{ entry.times | map('clock') | join('、') }} {% endif %}在{{ entry.spots | map('spot_name') | join('、') }}{{ one if entry.one_of else each }}{{ '；' if not loop.last }}{% endfor %}{% endmacro %}
+地图：x 向右增大、y 向上增大，中心在 (0, 0) 附近；天辉基地在左下角，夜魇基地在右上角。中路是连接两个基地的
+对角线，上路沿地图的左边和上边走，下路沿下边和右边走，河道从左上到右下斜穿地图、在正中和中路相交。
+天辉的优势路是下路、劣势路是上路，夜魇正好反过来，所以你们的优势路是{{ safe_lane }}，劣势路是{{ off_lane }}。
+固定建筑和地点的坐标如下，和状态里的 pos、队友位置是同一套：
+{% for line in map_reference %}
+{{ line }}
+{% endfor %}
+{% if events %}
+
+地图上定时出现的东西，时间和状态第一行的 time 是同一个钟：
+{% if 'bounty' in events %}
+- {{ 'bounty' | event_name }}：{{ when(events.bounty, '各刷一个', '其中一处刷一个') }}。捡到的人让全队每人都得到金钱。
+{% endif %}
+{% if 'water' in events %}
+- {{ 'water' | event_name }}：{{ when(events.water, '各刷一个', '其中一处刷一个') }}。
+{% endif %}
+{% if 'power' in events %}
+- {{ 'power' | event_name }}：{{ when(events.power, '各刷一个', '其中一处刷一个') }}，是{{ power_runes | join('、') }}里随机的一种。
+{% endif %}
+{% if 'wisdom' in events %}
+- {{ 'wisdom' | event_name }}：{{ when(events.wisdom, '各启动一次', '其中一处启动一次') }}。启动后走到神龛 {{ event_values.ability_xp_fountain.radius }} 距离内站 {{ event_values.ability_xp_fountain.countdown_time }} 秒，
+  你和全队等级最低的队友都获得经验，越晚越多{% if events.wisdom[0].amounts %}（前 {{ events.wisdom[0].amounts | length }} 次依次是 {{ events.wisdom[0].amounts | join('、') }}）{% endif %}；被人拿走以后要等下一次启动。
+{% endif %}
+{% if 'lotus' in events %}
+- {{ 'lotus' | event_name }}：{{ when(events.lotus, '各长一朵', '其中一处长一朵') }}{% if events.lotus[0].max %}，每个莲花池最多存 {{ events.lotus[0].max }} 朵{% endif %}。
+  走到莲花池 {{ event_values.ability_lotus_pool.radius }} 距离内就会自动把池里的莲花都采走，第一朵要 {{ '%g' | format(event_values.ability_lotus_pool.first_lotus_pickup_time) }} 秒，之后每朵更快。
+  采到的莲花是物品，使用后立刻回复生命和魔法。
+{% endif %}
+{% endif %}

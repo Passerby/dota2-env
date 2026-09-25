@@ -141,7 +141,7 @@ def last_session():
 def settle(runner):
     """Wait until no worker is in flight, so a test never races the reply it is about to assert on."""
     deadline = time.time() + 5
-    while any(slot.busy.is_set() for slot in runner.slots):
+    while any(channel.busy.is_set() for channel in [slot.act for slot in runner.slots] + runner.thinks.channels):
         assert time.time() < deadline, 'a fake gateway never answered'
         time.sleep(0.001)
 
@@ -149,6 +149,7 @@ def settle(runner):
 def drive(env, runner, steps, wait=True):
     """Run the real decide/step loop and return the actions handed to the env on each step."""
     _, info = env.reset(seed=0)
+    runner.sense(info['world_states'])
     applied = []
     for _ in range(steps):
         if wait:
@@ -167,6 +168,7 @@ def drive(env, runner, steps, wait=True):
             for key, space in team_action_space.spaces.items()
         }
         _, _, terminated, truncated, info = env.step(action)
+        runner.sense(info['world_states'])
         if terminated or truncated:
             break
     return applied
@@ -290,7 +292,7 @@ def test_a_target_that_left_the_unit_table_becomes_noop():
 @pytest.mark.parametrize('plan_length', [1, 6])
 def test_the_system_prompt_asks_for_one_action_per_line(plan_length):
     match = match_config(plan_length=plan_length)
-    prompt = agent.system_prompt(match.radiant.agents[0], match, TEAM_RADIANT)
+    prompt = agent.act_system_prompt(match.radiant.agents[0], match, TEAM_RADIANT)
     assert '\n  REASON, <一句简短的话>\n' in prompt and '"type"' not in prompt and '{{' not in prompt
     # every way of writing an action that resolve() reads is one the prompt teaches
     assert set(agent.FORMS) == {kind.name for kind in ActionType} - {'MOVE_TO'}  # written as MOVE with a point
@@ -301,18 +303,18 @@ def test_the_system_prompt_asks_for_one_action_per_line(plan_length):
 
 def test_the_system_prompt_describes_the_heros_own_skills():
     match = match_config()
-    prompt = agent.system_prompt(match.radiant.agents[0], match, TEAM_RADIANT)
+    prompt = agent.act_system_prompt(match.radiant.agents[0], match, TEAM_RADIANT)
     assert '用影魔（Shadow Fiend）打' in prompt
     assert '- nevermore_shadowraze1 毁灭阴影（Shadowraze）：冷却时间 9 秒，魔法消耗 75' in prompt
     assert '- nevermore_shadowraze3 毁灭阴影（Shadowraze）：同 nevermore_shadowraze1，距离：700' in prompt
     assert '- nevermore_necromastery 支配死灵（Necromastery）：先天技能，被动' in prompt
-    lina = agent.system_prompt(match.radiant.agents[2], match, TEAM_RADIANT)
+    lina = agent.act_system_prompt(match.radiant.agents[2], match, TEAM_RADIANT)
     assert '- lina_flame_cloak 腾焰斗篷（Flame Cloak）：需要阿哈利姆神杖' in lina and 'nevermore' not in lina
 
 
 def test_the_system_prompt_lists_the_heros_talents_tier_by_tier():
     match = match_config()
-    prompt = agent.system_prompt(match.radiant.agents[0], match, TEAM_RADIANT)
+    prompt = agent.act_system_prompt(match.radiant.agents[0], match, TEAM_RADIANT)
     assert '10 级：[0] +30 毁灭阴影连中伤害，或 [1] +30 灵魂盛宴攻击速度\n' in prompt
     assert '25 级：[6] 灵魂盛宴+30% 施法速度，或 [7] 毁灭阴影施加攻击伤害\n' in prompt
     assert (
@@ -322,13 +324,13 @@ def test_the_system_prompt_lists_the_heros_talents_tier_by_tier():
 
 def test_the_system_prompt_says_where_the_teams_safe_lane_is():
     match = match_config()
-    assert '你们的优势路是下路，劣势路是上路' in agent.system_prompt(match.radiant.agents[0], match, TEAM_RADIANT)
-    assert '你们的优势路是上路，劣势路是下路' in agent.system_prompt(match.radiant.agents[0], match, TEAM_DIRE)
+    assert '你们的优势路是下路，劣势路是上路' in agent.act_system_prompt(match.radiant.agents[0], match, TEAM_RADIANT)
+    assert '你们的优势路是上路，劣势路是下路' in agent.act_system_prompt(match.radiant.agents[0], match, TEAM_DIRE)
 
 
 def test_the_system_prompt_places_both_bases_in_the_coordinates_of_pos():
     match = match_config()
-    prompt = agent.system_prompt(match.radiant.agents[0], match, TEAM_RADIANT)
+    prompt = agent.act_system_prompt(match.radiant.agents[0], match, TEAM_RADIANT)
     assert '天辉: 遗迹 (-5920, -5352); 上路一塔 (-6336, 1856);' in prompt and '夜魇: 遗迹 (5528, 5000);' in prompt
     assert prompt.count('塔 (') == 22  # three per lane and two in the base, on each side
     assert '下路强化神符 (1180, -1216)' in prompt and '上路前哨 (-4096, -448)' in prompt
@@ -336,7 +338,7 @@ def test_the_system_prompt_places_both_bases_in_the_coordinates_of_pos():
 
 def test_the_system_prompt_says_when_runes_shrines_and_lotuses_come():
     match = match_config()
-    prompt = agent.system_prompt(match.radiant.agents[0], match, TEAM_RADIANT)
+    prompt = agent.act_system_prompt(match.radiant.agents[0], match, TEAM_RADIANT)
     # the times, spots and numbers are events.json's, measured on the client by scripts/probe_events.py
     assert (
         '- 赏金神符：0:00 在上路强化神符、下路强化神符、上路赏金神符、下路赏金神符各刷一个；'
@@ -345,7 +347,7 @@ def test_the_system_prompt_says_when_runes_shrines_and_lotuses_come():
     assert '- 强化神符：6:00 起每 2 分钟在上路强化神符、下路强化神符其中一处刷一个，是增伤神符、极速神符、' in prompt
     assert '走到神龛 300 距离内站 3 秒' in prompt and '（前 3 次依次是 200、500、800）' in prompt
     assert '在上路莲花池、下路莲花池各长一朵，每个莲花池最多存 6 朵。' in prompt
-    lone = agent.system_prompt(match.radiant.agents[0], dataclasses.replace(match, mode='mid1v1'), TEAM_RADIANT)
+    lone = agent.act_system_prompt(match.radiant.agents[0], dataclasses.replace(match, mode='mid1v1'), TEAM_RADIANT)
     assert '- 赏金神符：4:00 起每 4 分钟' in lone  # the 1v1 has no runes at 0:00
 
 
@@ -353,11 +355,11 @@ def test_every_position_and_mode_has_its_own_lines():
     match = match_config()
     config = match.radiant.agents[0]
     roles = {
-        agent.system_prompt(dataclasses.replace(config, position=position), match, TEAM_RADIANT).splitlines()[1]
+        agent.act_system_prompt(dataclasses.replace(config, position=position), match, TEAM_RADIANT).splitlines()[1]
         for position in POSITIONS
     }
     goals = {
-        agent.system_prompt(config, dataclasses.replace(match, mode=mode), TEAM_RADIANT).splitlines()[3]
+        agent.act_system_prompt(config, dataclasses.replace(match, mode=mode), TEAM_RADIANT).splitlines()[3]
         for mode in MODES
     }
     # a position or mode the template has no branch for comes out as an empty line
@@ -367,7 +369,7 @@ def test_every_position_and_mode_has_its_own_lines():
 
 def test_the_system_prompt_tells_noop_from_stop():
     match = match_config()
-    lines = agent.system_prompt(match.radiant.agents[0], match, TEAM_RADIANT).splitlines()
+    lines = agent.act_system_prompt(match.radiant.agents[0], match, TEAM_RADIANT).splitlines()
     noop = next(line for line in lines if line.startswith('  NOOP '))
     stop = next(line for line in lines if line.startswith('  STOP '))
     # NOOP leaves the hero's current order alone; STOP cancels a swing that has not landed and a channel
@@ -380,13 +382,13 @@ def test_the_user_message_lists_items_then_state_then_teammates():
     blaze = AgentConfig(nickname='Blaze', hero='npc_dota_hero_lina', position='offlane', gateway='fake')
     frost = AgentConfig(nickname='Frost', hero='npc_dota_hero_crystal_maiden', position='hard_support', gateway='fake')
     items = ['item_tango', 'item_tango', 'item_from_a_newer_client']  # a repeat, and a name the data does not know
-    assert agent.user_prompt('STATE', items, [(blaze, lina), (frost, None)], None) == (
+    assert agent.act_user_prompt('STATE', items, [(blaze, lina, None), (frost, None, None)], None) == (
         f'你身上的物品：\n{item_text("item_tango")}\n\nSTATE\n\n你的队友：\n'
         '  Blaze 3号位（劣势路） 莉娜 lvl 3 hp 50% 位于 (-1200, 301) lh/dn 4/1\n'
         '  Frost 5号位（纯辅助） 状态未上报\n\n'
         '你还没有下过命令'
     )
-    assert agent.user_prompt('STATE', [], [], []) == 'STATE\n\n你还没有下过命令'
+    assert agent.act_user_prompt('STATE', [], [], []) == 'STATE\n\n你还没有下过命令'
 
 
 def test_the_user_message_ends_with_the_last_commands_and_where_the_hero_stood():
@@ -397,7 +399,7 @@ def test_the_user_message_ends_with_the_last_commands_and_where_the_hero_stood()
         agent.Note(kind='undelivered', dota_time=63.9, error='ReadTimeout()'),
         agent.Note(kind='unusable', dota_time=65.0, error='reply carried no actions'),
     ]
-    assert agent.user_prompt('STATE', [], [], history) == (
+    assert agent.act_user_prompt('STATE', [], [], history) == (
         'STATE\n\n你最近的命令，旧的在前，括号里是命令下发时你站的位置：\n'
         '  -0:05 (-1500, -1400) MOVE, 1180, -1216 已经下达\n'
         '  1:01 (-1200, -1300) ATTACK, 3 被拒绝了：gone\n'
@@ -453,8 +455,8 @@ def test_cadence_is_counted_in_game_seconds(env):
     drive(env, lazy, 12)
     lazy.close()
     # the fake advances dota_time 0.2s per observation, so 12 steps is about 2.4 game seconds
-    assert quick.slots[0].requests >= 10
-    assert lazy.slots[0].requests <= 2
+    assert quick.slots[0].act.requests >= 10
+    assert lazy.slots[0].act.requests <= 2
 
 
 def test_a_gateway_failure_leaves_the_hero_holding_its_order(env):
@@ -463,7 +465,7 @@ def test_a_gateway_failure_leaves_the_hero_holding_its_order(env):
     applied = drive(env, runner, 3)
     runner.close()
     assert all(one['type'] == int(ActionType.NOOP) for step in applied for one in step)
-    assert runner.slots[0].errors > 0 and runner.slots[0].usd == 0.0
+    assert runner.slots[0].act.errors > 0 and runner.slots[0].act.usd == 0.0
 
 
 def test_tokens_and_cost_are_accumulated_per_agent(env):
@@ -471,9 +473,9 @@ def test_tokens_and_cost_are_accumulated_per_agent(env):
     runner = TeamRunner(match_config(interval=0.0), match_config(interval=0.0).radiant, {'fake': gateway})
     drive(env, runner, 4)
     runner.close()
-    slot = runner.slots[0]
-    assert slot.replies > 0 and slot.input_tokens == 100 * slot.replies
-    assert runner.usd == pytest.approx(0.002 * sum(one.replies for one in runner.slots))
+    channel = runner.slots[0].act
+    assert channel.replies > 0 and channel.input_tokens == 100 * channel.replies
+    assert runner.usd == pytest.approx(0.002 * sum(one.act.replies for one in runner.slots))
 
 
 def test_a_taunt_reaches_the_bridge_as_a_chat_extra_action(env):
@@ -578,7 +580,7 @@ def test_the_transcript_records_every_decision(env, tmp_path):
     assert [(header['kind'], header['nickname']) for header in headers] == [
         ('agent', f'A{row}') for row in range(TEAM_SIZE)
     ]
-    assert headers[0]['system'] == agent.system_prompt(match.radiant.agents[0], match, TEAM_RADIANT)
+    assert headers[0]['system'] == agent.act_system_prompt(match.radiant.agents[0], match, TEAM_RADIANT)
     assert headers[0]['hero'] == HEROES[0] and headers[0]['model'] == 'm' and headers[0]['plan_length'] == 1
     assert headers[0]['params'] == {'temperature': 0.3, 'max_tokens': 60}  # the agent's own params win
     assert headers[1]['params'] == {'temperature': 0.3, 'max_tokens': 200}
@@ -712,11 +714,11 @@ def test_a_hero_acts_on_its_first_line_while_the_model_is_still_writing(env):
     try:
         assert all(one['type'] == int(ActionType.NOOP) for one in decide())  # every agent asks
         deadline = time.time() + 5
-        while any(slot.outbox.empty() for slot in runner.slots):
+        while any(slot.act.outbox.empty() for slot in runner.slots):
             assert time.time() < deadline, 'a first line never arrived'
             time.sleep(0.001)
         assert all(one['type'] == int(ActionType.MOVE) for one in decide())
-        assert all(slot.busy.is_set() for slot in runner.slots)  # the rest of every reply is still to come
+        assert all(slot.act.busy.is_set() for slot in runner.slots)  # the rest of every reply is still to come
     finally:
         gate.set()
         runner.close()
@@ -729,7 +731,7 @@ def test_a_reply_cut_off_after_some_steps_still_carries_them_out(env):
     applied = drive(env, runner, 3)
     runner.close()
     assert all(one['type'] == int(ActionType.MOVE) for one in applied[1])
-    assert runner.slots[0].errors > 0
+    assert runner.slots[0].act.errors > 0
     # what the model hears about is the step that went out, not the timeout after it
     prompt = gateway.calls[-1][0][1]['content']
     assert prompt.endswith(' MOVE, 4 已经下达') and '没能送达' not in prompt

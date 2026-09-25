@@ -165,7 +165,8 @@ Dota 是实时推进的。策略慢了不会报错，只是那几个 tick 英雄
 
 | 字段 | 含义 |
 |---|---|
-| `info["skipped_observations"]` | 累计有多少帧观测因为策略没跟上而被跳过（`observe()` 总是取最新一帧） |
+| `info["skipped_observations"]` | 累计有多少帧因为策略没跟上而没被据以行动（环境总是按最新一帧行动）；这些帧不丢，都在 `info["world_states"]` 里 |
+| `info["world_states"]` | 上一步以来的每一帧，旧的在前，最后一帧就是 `info["world_state"]`；`reset()` 给的是等英雄出现时收到的全部帧 |
 | `info["action_delivery"]["sent" / "executed" / "lost" / "pending"]` | 写了多少动作文件；Lua 确认执行了多少；多少被后一个文件覆盖、Lua 从未见过；多少还没回执 |
 | `info["action_delivery"]["last_delay" / "delay_median" / "delay_max"]` | 动作真正执行时，比它所依据的观测晚了多少**游戏秒**（下限 0.07） |
 

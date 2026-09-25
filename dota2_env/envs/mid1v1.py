@@ -34,7 +34,8 @@ class DotaMid1v1Env(gym.Env):
     """
     Observation: `dota2_env.observation.observation_space` (hero vector, ability table, nearest-unit table).
     Action:      `dota2_env.actions.action_space` (type / move direction / target row / ability slot).
-    Info:        `action_mask`, `world_state` (raw CMsgBotWorldState), `dota_time`, `reward` components, `winner`.
+    Info:        action_mask, world_state (raw CMsgBotWorldState), dota_time, reward components, winner,
+                 and world_states: every frame since the last step, oldest first, world_state last.
 
     Every `reset()` restarts the Dota client (about 20 s), and one `step()` lasts `ticks_per_observation`
     game ticks (30 ticks = 1 game second) divided by `timescale` in wall-clock time. Dota cannot be seeded,
@@ -125,9 +126,12 @@ class DotaMid1v1Env(gym.Env):
         # Buildings are reported a few frames before the heroes spawn; wait for ours.
         deadline = time.time() + timeout
         self.trees = TreeTable()
+        seen = []
         while True:
-            world_state = self._session.observe(timeout=max(deadline - time.time(), 0.001))
-            self.trees.update(world_state)
+            frames = self._session.observe(timeout=max(deadline - time.time(), 0.001))
+            for world_state in frames:
+                self.trees.update(world_state)
+            seen += frames
             hero = find_hero(world_state, self.team_id)
             if hero is not None:
                 break
@@ -138,7 +142,9 @@ class DotaMid1v1Env(gym.Env):
         self.rules.reset(world_state, self.team_id)
         self.rules(world_state)
         self._set_state(world_state)
-        return self._observation.arrays, self._info()
+        info = self._info()
+        info['world_states'] = seen
+        return self._observation.arrays, info
 
     def step(self, action):
         assert self._session is not None, 'call reset() first'
@@ -161,18 +167,20 @@ class DotaMid1v1Env(gym.Env):
         deadline = time.time() + self.step_timeout
         while True:
             try:
-                world_state = self._session.observe(timeout=min(1.0, self.step_timeout))
+                frames = self._session.observe(timeout=min(1.0, self.step_timeout))
                 break
             except queue.Empty:
                 if time.time() >= deadline or self._session.match_winner() is not None:
                     return self._feed_ended()
-        self.trees.update(world_state)
+        for world_state in frames:
+            self.trees.update(world_state)
         terminated, truncated, winner = self.rules(world_state)
         reward, components = self.reward_fn(previous, world_state, winner)
         self._set_state(world_state)
         info = self._info()
         info['reward'] = components
         info['winner'] = winner
+        info['world_states'] = frames
         return self._observation.arrays, float(reward), terminated, truncated, info
 
     def _feed_ended(self):
@@ -181,6 +189,7 @@ class DotaMid1v1Env(gym.Env):
         winner = self._session.match_winner()
         info = self._info()
         info['winner'] = winner
+        info['world_states'] = []
         if winner is None:
             logger.warning(f'no world state for {self.step_timeout:.0f}s, truncating the episode')
             info.update(reward=dict.fromkeys(self.reward_fn.weights, 0.0), error='worldstate feed ended')
