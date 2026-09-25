@@ -166,7 +166,17 @@ order，所以英雄会继续执行上一条命令（`clear.lua` 才是清空的
 
 ## 7. 日志
 
-`<log_dir>/<时间戳>.jsonl`，只由主线程写，三种行：
+`<log_dir>/<时间戳>.jsonl`，只由主线程写，按行缓冲（每条记录一写完就落盘，对局还在跑也能跟着读），四种行：
+
+**`kind: "agent"`** —— 开局时每个 agent 一行，排在所有决策前面，是它每次请求除 user 消息以外带的全部东西：
+
+```jsonc
+{"kind": "agent", "team": 2, "nickname": "影魔", "hero": "npc_dota_hero_nevermore", "position": "mid",
+ "gateway": "flash", "model": "deepseek/deepseek-v4.1-flash",
+ "params": {"temperature": 0.3, "max_tokens": 200},   // gateway 的 params 加上 agent 自己的，同名以 agent 的为准
+ "plan_length": 6,
+ "system": "你是影魔，在一场 Dota 2 比赛中为天辉出战……"}   // 整份 system prompt，开局渲染一次
+```
 
 **`kind: "decision"`** —— 每份回复传完时一行（它的动作在那之前就已经开始下发了）：
 
@@ -190,8 +200,13 @@ order，所以英雄会继续执行上一条命令（`clear.lua` 才是清空的
 
 ```jsonc
 {"kind": "rejected", "team": 2, "nickname": "影魔", "dota_time": 13.0,
+ "decided_at": 11.2,   // 这一步出自哪次决策：和那条 decision 的 decided_at 相同
  "step": "ATTACK, 3", "error": "target 3 is gone from the unit table"}
 ```
+
+动作在回复传完之前就开始下发，所以被拒记录常常写在它的 decision 前面；用 (`team`, `nickname`, `decided_at`)
+对上它。较早的日志没有 `agent` 行，被拒记录也没有 `decided_at`，只能找同一英雄、计划里有这一步、
+`decided_at` 不晚于被拒时刻的最后一次决策。
 
 **`kind: "summary"`** —— 最后一行，每个 agent 的请求数 / 回复数 / 网络错 / 被拒动作数 /
 已执行的计划步数 / 持有帧数 / token / 花费 / 平均延迟。
@@ -215,6 +230,42 @@ jq -r 'select(.kind=="decision") | .prompt' logs/<时间戳>.jsonl | head -40   
 ```
 
 **每个模型的 `rejected_actions` 比例是判断它值不值得跑的最便宜的信号。**
+
+### prompt 调试器
+
+逐次看、改完重发，用本地网页（[scripts/prompt_debugger.py](../scripts/prompt_debugger.py)，页面在
+[scripts/prompt_debugger/](../scripts/prompt_debugger/)）：
+
+```bash
+python scripts/prompt_debugger.py                                   # 只看：logs/ 下的所有日志
+python scripts/prompt_debugger.py --config configs/my_match.yaml    # 还能改完重发、按当前模板重建 system prompt
+python scripts/prompt_debugger.py logs/<时间戳>.jsonl --config configs/my_match.yaml --port 8766
+```
+
+然后打开它打印的 `http://127.0.0.1:8765`。
+
+- **左边**每次决策一行，可以按英雄、出错 / 被拒筛，也能在 prompt、回复、理由和错误里全文搜（命中的词在右边高亮）；j / k 切换。
+  勾上「跟随」每 2 秒读一次新写进来的记录，出现更新的日志文件就切过去，一边跑对局一边看。
+- **中间**是一次决策：
+  - 回复逐行标注：计划的第几步、哪一步被拒以及原因、超出 `plan_length` 没执行的行、没写完的最后一行、理由、喊话。
+  - user prompt：按段折叠，每段带字数和估算 token。
+  - 和同一英雄上一次 prompt 的逐行差异。
+  - system prompt：日志有 `agent` 行就用它，还能和当前模板重建的比；旧日志按当前模板和 `--config` 重建。
+  - 「概览」：每个英雄的决策数、出错、被拒、token、花费、延迟分位，还有被拒原因排行，点一条就筛出那些决策。
+- **右边**（要 `--config`）把这一次的 system / user prompt 改了，用配置里的 gateway 一次发 1-5 份：
+  - 新回复流式逐行显示，照 runner 的读法标注，可以和原回复逐行对比。
+  - 参数框就是请求体里除 messages 以外的全部，原样发出，gateway 自己的 params 不再另外合进去。
+  - system prompt 的改动按日志和英雄保留，换一次决策还在，可以拿同一份改动连着试几个局面；
+    改了 `system.jinja` 点「按当前模板重建」就行，不用重启。
+- 服务只绑 127.0.0.1，只回应自己的页面；key 留在 Python 进程里，页面拿不到。
+
+限制：
+
+- 重发只检查每行的格式。哪些动作合法取决于那一帧的 mask，日志里没有。
+- 改了 `user.jinja` 没法从日志重新渲染：日志只有渲染好的文字，没有 world state，只能在右边直接改文字。
+- 旧日志的 system prompt 是按当前模板重建的，模板改过的话和当时发出的不一样。
+- 看不到模型的思考内容：gateway 只读 `content`，和对局里一样。
+- 重发花的是真钱，重发面板顶上累计这一页花了多少。
 
 ## 8. prompt 里有什么
 
@@ -247,6 +298,20 @@ jq -r 'select(.kind=="decision") | .prompt' logs/<时间戳>.jsonl | head -40   
    神符点: 上路强化神符 (-1640, 1112); 下路强化神符 (1180, -1216); 上路赏金神符 (-996, 4431); 下路赏金神符 (595, -4660)
    地标: 上路肉山巢穴 (-3194, 2395); 下路肉山巢穴 (2860, -2765); …; 上路前哨 (-4096, -448); 下路前哨 (3392, -448)
    ```
+   再往下是**地图上定时出现的东西**：本局模式的时间表（`map_features.load_events(match.mode)`，数据是 `events.json`，
+   [MAP_DATA.md](MAP_DATA.md) §3.1）里有的每一种一条，写什么时候、在哪、给什么、怎么拿。时间和地点由模板里的 `when()`
+   宏从条目拼出来，神龛的 300 / 3 秒、莲花池的 350 / 1.5 秒、每池最多 6 朵、神龛前几次的经验也都是 `events.json` 里的数：
+   ```
+   - 赏金神符：0:00 在上路强化神符、下路强化神符、上路赏金神符、下路赏金神符各刷一个；4:00 起每 4 分钟在上路赏金神符、下路赏金神符各刷一个。捡到的人让全队每人都得到金钱。
+   - 圣水神符：2:00、4:00 在上路强化神符、下路强化神符各刷一个。
+   - 强化神符：6:00 起每 2 分钟在上路强化神符、下路强化神符其中一处刷一个，是增伤神符、极速神符、…、护盾神符里随机的一种。
+   - 智慧神龛：7:00 起每 7 分钟在上路智慧神龛、下路智慧神龛各启动一次。启动后走到神龛 300 距离内站 3 秒，
+     你和全队等级最低的队友都获得经验，越晚越多（前 3 次依次是 200、500、800）；被人拿走以后要等下一次启动。
+   - 疗伤莲花：3:00 起每 3 分钟在上路莲花池、下路莲花池各长一朵，每个莲花池最多存 6 朵。…
+   ```
+   这里只讲规则；下一次什么时候、还有多久、在哪，不让模型自己拿时钟和坐标算，由状态里的 `upcoming` 块给出。1v1 的表不一样
+   （没有 0:00 的赏金神符，圣水神符只有 4:00 一次），同一个模板照着各自的表写。神符的说法、神符种类的名字
+   （客户端的 `DOTA_HUD_Rune_*`）在 `text.py` 的 `RUNE_TYPES`，神龛、莲花池这些地名在 `SPOT_KINDS`。
 2. **本英雄的技能**（`game_text.hero_text()`），按技能栏顺序，每条开头是状态里 "abilities" 下用的内部名：
    ```
    - nevermore_shadowraze1 毁灭阴影（Shadowraze）：冷却时间 9 秒，魔法消耗 75
@@ -322,6 +387,22 @@ jq -r 'select(.kind=="decision") | .prompt' logs/<时间戳>.jsonl | head -40   
    - `our towers` / `enemy towers`：每条路上两方最外面那座还立着的塔（一塔倒了换二塔），是找线、认危险区的锚点；
      敌方的塔开局就在本方的 world state 里（map.json 的建筑就是从天辉视角的第一帧取的），不需要视野。
    - `available` 的意思见 [FEATURES.md](FEATURES.md) §1.6（刷新就标上，不需要视野）；方括号里是 `PICKUP_RUNE` 的 R。
+     world state 带了神符种类时跟在后面（`available 极速神符`）。没视野时也可能带，而且可能是过时的
+     （[VERSION_DIFF.md](VERSION_DIFF.md) 3.3），system 里照实这样告诉模型。
+   - 地标行之后是 `upcoming` 块：每一种一行，下一次什么时候来、离现在多久、在哪，按时间排，同一种只列最近的一次，
+     不会再来的不列（1v1 过了 4:00 就没有圣水神符）。每个地点都写全：名字、`at` 后面的绝对坐标（可以直接抄进
+     `MOVE, x, y`）和离英雄的距离，`or` 表示只在其中一处：
+     ```
+     upcoming:
+       8:00 in 0:35 赏金神符: 上路赏金神符 at (-996, 4431) dist 5853, 下路赏金神符 at (595, -4660) dist 3875
+       8:00 in 0:35 强化神符: 上路强化神符 at (-1640, 1112) dist 2516 or 下路强化神符 at (1180, -1216) dist 2686
+       9:00 in 1:35 疗伤莲花: 上路莲花池 at (-7548, 4209) dist 8249, 下路莲花池 at (7504, -4405) dist 9492
+       14:00 in 6:35 智慧神龛: 上路智慧神龛 at (-8088, 768) dist 6936, 下路智慧神龛 at (8167, -1142) dist 9671
+     ```
+     第一版这里只写 `rune spots` 行的编号（`赏金神符 [2] [3]`），模型得回上面两行去查每个编号是哪、多远，所以改成写全；
+     捡神符时 `PICKUP_RUNE, R` 的 R 还是按名字去 `rune spots` 行里找。块里的时间由 `map_features.upcoming(mode, dota_time)`
+     按 `events.json` 算，模式来自 `TeamRunner` 的 `match.mode`（1v1 环境的 `render()` 和 `TextWrapper` 固定是 `mid1v1`，
+     5v5 的 `describe_team` 是 `allpick5v5`）；`describe()` 不给模式就没有这一块。
    - 技能行下面、有学了或现在能学的天赋时，多一行 `talents: [1] +30 灵魂盛宴攻击速度 learned; [2] … / [3] … ready: TALENT`。
    - 物品行最后是 TP 格：`TP slot: item_tpscroll 回城卷轴 charges 1 ready: TP`（冷却中写 `cd 43.1s`）。储藏处有东西、
      或者信使正带着东西时，再多一行 `stash: item_tpscroll 回城卷轴 charges 1; courier dist 5212 (-4012,-3325)`
@@ -381,6 +462,8 @@ token（改动前一局 744），输出 105（改动前 81）。所以输入大�
 之后 system 又加了地图方位和坐标表（约多 450 token），跑满 10 分钟的上限估算变成约 $2.9。再之后加了天赋表和
 `PICKUP_RUNE` / `TP` / `TALENT` / `COURIER` 的说明与动作行，影魔的 system 多 804 字符（364 个汉字），约合 500 token。
 网关有前缀缓存时这两块按缓存命中计价（各家通常是正常输入价的一到两成），下表的金额是加这些之前算的。
+地图定时事件那一段让 5v5 的 system 再多 605 字符（422 个汉字），同样整局不变；每轮 user 里的 `upcoming` 块约 370 字符
+（60 多个汉字，每个地点都带坐标和距离），调试器的估算是约 160 token；开局 0:00 那一行有四个地点，会再长一些。
 
 | 场景 | 请求数 | token | deepseek-flash 高峰价 |
 |---|---|---|---|

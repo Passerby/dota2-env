@@ -25,10 +25,12 @@ uv pip install -e ".[dev]"
 .venv/bin/python examples/scripted_agent.py --timescale 4        # real headless Dota, ~2 min per episode
 .venv/bin/python -u examples/scripted_5v5.py --timescale 4       # 5v5, all five heroes scripted (-u: print is block-buffered when redirected)
 .venv/bin/python examples/llm_match.py --config configs/match.example.yaml --dry-run   # LLM match, config only
+.venv/bin/python scripts/prompt_debugger.py --config configs/my_match.yaml   # logs/ in a browser, resend edited prompts
 .venv/bin/python scripts/probe_worldstate.py --seconds 120       # raw bridge compatibility probe
 .venv/bin/python -u scripts/extract_map.py --vrf ~/.cache/dota2_env/vrf-20.0/Source2Viewer-CLI --patch 7.41f  # map.json, real Dota
 .venv/bin/python -u scripts/fetch_game_text.py                   # items / abilities / heroes .json, ~30 min cold, reads the installed client too
 .venv/bin/python -u scripts/probe_trees.py                       # map.json tree ids == tree_events ids, real Dota
+.venv/bin/python -u scripts/probe_events.py --patch 7.41f        # events.json: rune / shrine / lotus times, real Dota, ~12 min
 .venv/bin/python -u scripts/probe_server_vm.py                   # server VM: chat, events, scenario, pause; --dump-api PATH
 ```
 
@@ -90,10 +92,17 @@ uv pip install -e ".[dev]"
   for the data files, the name tables at the top of `text.py`, `LABELS` in `game_text.py`); do not type names in by
   hand. The system prompt (the hero's skills included) is built once per match so prefix caches keep hitting;
   anything that changes goes in the user message, the held-item notes first because they change least
-  (`docs/LLM_MATCH.md` §8).
+  (`docs/LLM_MATCH.md` §8). When runes, Shrines of Wisdom and lotuses come is measured per client and game mode into
+  `data/events.json` (`scripts/probe_events.py`, `docs/MAP_DATA.md` §3.1): the system prompt states the rules, the
+  state's `upcoming` block (`map_features.upcoming`, needs `describe(mode=...)`) the next times. Never type a timing in.
 - The wording of both LLM messages lives in the Jinja templates `dota2_env/llm/prompts/system.jinja` and
   `user.jinja`; `agent.system_prompt()` / `agent.user_prompt()` only hand them data (configs, names, numbers, the
   rendered state block). Change wording in a template, never by assembling sentences from Python strings. The
   environment uses `StrictUndefined`, so a misspelt variable fails the tests instead of dropping a sentence, and
   `tests/test_llm.py` pins both messages' layout; `text.py` / `game_text.py` stay Python because the env's ansi
   render uses them and the env must not need jinja2.
+- The transcript (`TeamRunner.record`, `docs/LLM_MATCH.md` §7) starts with one `agent` record per agent (its system
+  prompt, model, merged params, plan_length), and a `rejected` record's `decided_at` names its decision. It is read
+  by `scripts/check_match.py` and by the prompt debugger (`scripts/prompt_debugger.py`, page in
+  `scripts/prompt_debugger/`, `log.js` parses it); change the three together. The debugger's page is plain ES
+  modules with no build step, and puts every log and model text into the DOM as text, never as HTML.

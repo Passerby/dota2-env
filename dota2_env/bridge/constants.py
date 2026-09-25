@@ -25,6 +25,10 @@ HOST_MODE_DEDICATED = 'HOST_MODE_DEDICATED'
 HOST_MODE_GUI = 'HOST_MODE_GUI'
 HOST_MODE_GUI_MENU = 'HOST_MODE_GUI_MENU'
 
+# CMsgBotWorldState.RuneInfo.type, the bot API's RUNE_* (the power runes are the other types)
+RUNE_BOUNTY = 5
+RUNE_WATER = 7
+
 # CMsgBotWorldState.UnitType
 UNIT_TYPE_HERO = 1
 UNIT_TYPE_CREEP_HERO = 2

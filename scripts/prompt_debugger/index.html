@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prompt 调试器</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff; --fg: #1f2328; --muted: #656d76; --border: #d0d7de; --soft: #eaeef2; --panel: #f6f8fa;
+  --selected: #ddf4ff; --accent: #0969da; --red: #cf222e; --red-bg: #ffebe9; --green-bg: #dafbe1;
+  --amber: #9a6700; --amber-bg: #fff8c5; --mark: #fff1a8;
+  --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "PingFang SC", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117; --fg: #e6edf3; --muted: #8d96a0; --border: #30363d; --soft: #21262d; --panel: #161b22;
+    --selected: #1c3553; --accent: #4493f8; --red: #ff7b72; --red-bg: #3d1b1e; --green-bg: #13301f;
+    --amber: #d29922; --amber-bg: #3a2d12; --mark: #6b5a00;
+  }
+}
+body {
+  margin: 0; height: 100vh; display: grid; grid-template-rows: auto minmax(0, 1fr);
+  background: var(--bg); color: var(--fg); font: 13px/1.5 var(--sans);
+}
+button, select, input, textarea { font: inherit; color: inherit; }
+button {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 1px 8px; cursor: pointer;
+}
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.on { border-color: var(--accent); color: var(--accent); }
+select, input[type=search], textarea {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px;
+}
+textarea { width: 100%; box-sizing: border-box; resize: vertical; font: 12px/1.45 var(--mono); }
+pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12px/1.45 var(--mono); }
+mark { background: var(--mark); color: inherit; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.error-line, .error-text { color: var(--red); }
+.toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 4px 0 8px; }
+
+header {
+  display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+  padding: 6px 12px; border-bottom: 1px solid var(--border);
+}
+header #log { max-width: 340px; }
+main { display: grid; grid-template-columns: 300px minmax(0, 1.15fr) minmax(0, 1fr); min-height: 0; }
+body.no-resend main { grid-template-columns: 300px minmax(0, 1fr); }
+@media (max-width: 1200px) {
+  main { grid-template-columns: 230px minmax(0, 1fr) minmax(0, 1fr); }
+  body.no-resend main { grid-template-columns: 230px minmax(0, 1fr); }
+}
+body.no-resend #resend { display: none; }
+
+#sidebar { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); }
+.filters { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.filters .row { display: flex; gap: 6px; margin: 6px 0 2px; }
+.filters input[type=search] { flex: 1; min-width: 0; }
+.chip { border-radius: 10px; margin: 0 4px 4px 0; }
+.chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+#list { flex: 1; overflow: auto; margin: 0; padding: 0; list-style: none; }
+#list li {
+  display: flex; gap: 6px; padding: 2px 10px; white-space: nowrap; cursor: pointer;
+  border-bottom: 1px solid var(--soft);
+}
+#list li:hover { background: var(--panel); }
+#list li.selected { background: var(--selected); }
+#list .time { flex: none; width: 44px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+#list .who { flex: none; }
+#list .reason { overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+.badge { flex: none; align-self: center; padding: 0 4px; border-radius: 3px; font-size: 11px; line-height: 16px; }
+.badge.error { background: var(--red-bg); color: var(--red); }
+.badge.rejected { background: var(--amber-bg); color: var(--amber); }
+.keys { padding: 4px 10px; border-top: 1px solid var(--border); }
+
+#detail { overflow: auto; min-height: 0; }
+.head { padding: 10px 12px 4px; }
+.head .who { font-size: 14px; font-weight: 600; }
+.tabs {
+  position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; gap: 2px; padding: 0 8px;
+  background: var(--bg); border-bottom: 1px solid var(--border);
+}
+.tabs button {
+  border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 6px 8px;
+  white-space: nowrap;
+}
+.tabs button.on { border-bottom-color: var(--accent); color: var(--accent); }
+#tab-body, .pad { padding: 10px 12px 40px; }
+
+.lines { font: 12px/1.45 var(--mono); }
+.line { display: grid; grid-template-columns: 38px minmax(0, 1fr); column-gap: 8px; padding: 1px 4px; border-radius: 3px; }
+.line .tag { text-align: right; color: var(--muted); font-family: var(--sans); font-size: 11px; line-height: 17px; }
+.line .text { white-space: pre-wrap; word-break: break-word; }
+.line .why { grid-column: 2; font-family: var(--sans); color: var(--muted); }
+.line.step .tag { color: var(--accent); }
+.line.failed { background: var(--red-bg); }
+.line.failed .why { color: var(--red); }
+.line.skip, .line.extra, .line.cut, .line.unplanned { color: var(--muted); }
+
+.section.gap { margin-top: 10px; }
+details.section > summary { cursor: pointer; font: 12px/1.45 var(--mono); white-space: pre-wrap; word-break: break-word; }
+details.section .size { color: var(--muted); font-family: var(--sans); }
+details.section > pre { margin-left: 12px; }
+.diff { font: 12px/1.45 var(--mono); white-space: pre-wrap; word-break: break-word; }
+.diff .add { background: var(--green-bg); }
+.diff .del { background: var(--red-bg); }
+.diff .skipped { color: var(--muted); text-align: center; }
+table { border-collapse: collapse; margin-bottom: 16px; }
+th, td { padding: 3px 8px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.ranking { margin: 0 0 16px; padding: 0; list-style: none; }
+.ranking button { border: none; background: none; padding: 1px 0; text-align: left; }
+.ranking button:hover { color: var(--accent); }
+
+#resend { overflow: auto; min-height: 0; padding: 0 12px 40px; border-left: 1px solid var(--border); }
+.panel-head { position: sticky; top: 0; z-index: 1; padding: 8px 0; background: var(--bg); font-weight: 600; }
+.field { margin-bottom: 10px; }
+.field-head { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 3px; }
+.state.changed { color: var(--amber); }
+#resend-body.idle { opacity: .5; pointer-events: none; }
+.round { margin: 10px 0; padding: 8px; border: 1px solid var(--border); border-radius: 6px; }
+.card { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border); }
+</style>
+</head>
+<body>
+<header>
+  <strong>Prompt 调试器</strong>
+  <select id="log" title="日志文件，最近写过的在前"></select>
+  <label title="每 2 秒读一次新写进来的记录；出现更新的日志文件就切过去"><input id="follow" type="checkbox"> 跟随</label>
+  <span id="totals" class="muted"></span>
+  <button id="overview" type="button">概览</button>
+  <button id="resend-toggle" type="button" class="on">重发面板</button>
+  <span id="status" class="muted"></span>
+</header>
+<main>
+  <aside id="sidebar">
+    <div class="filters">
+      <div id="heroes"></div>
+      <div class="row">
+        <select id="status-filter">
+          <option value="all">全部</option>
+          <option value="problem">有问题</option>
+          <option value="error">出错</option>
+          <option value="rejected">被拒</option>
+        </select>
+        <input id="search" type="search" placeholder="搜 prompt / 回复 / 理由 / 错误">
+      </div>
+      <div id="count" class="muted small"></div>
+    </div>
+    <ol id="list"></ol>
+    <div class="keys muted small">j / k 或 ↓ / ↑ 切换决策</div>
+  </aside>
+  <section id="detail"></section>
+  <section id="resend">
+    <div class="panel-head">改完重发 <span id="rs-config" class="muted small"></span></div>
+    <div id="resend-body" class="idle">
+      <div class="toolbar">
+        <label>网关 <select id="rs-gateway"></select></label>
+        <label>次数 <select id="rs-count"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label>
+        <button id="rs-send" type="button" class="primary">发送</button>
+        <button id="rs-clear" type="button">清空结果</button>
+        <span id="rs-spent" class="muted small"></span>
+      </div>
+      <div class="field">
+        <div class="field-head">参数 <span class="muted small">除 messages 外的整个请求，原样发出</span>
+          <button id="rs-params-reset" type="button">还原</button> <span id="rs-params-error" class="error-text small"></span></div>
+        <textarea id="rs-params" rows="6" spellcheck="false"></textarea>
+      </div>
+      <div class="field">
+        <div class="field-head">System prompt <span id="rs-system-state" class="state small"></span>
+          <button id="rs-system-rebuild" type="button">按当前模板重建</button>
+          <button id="rs-system-reset" type="button">还原</button>
+          <button id="rs-system-diff" type="button">看改动</button></div>
+        <textarea id="rs-system" rows="10" spellcheck="false"></textarea>
+        <div id="rs-system-changes"></div>
+      </div>
+      <div class="field">
+        <div class="field-head">User prompt <span id="rs-user-state" class="state small"></span>
+          <button id="rs-user-reset" type="button">还原</button>
+          <button id="rs-user-diff" type="button">看改动</button></div>
+        <textarea id="rs-user" rows="14" spellcheck="false"></textarea>
+        <div id="rs-user-changes"></div>
+      </div>
+      <p class="muted small">只检查每行的格式：那一帧哪些动作合法没有记进日志，查不了。system prompt 的改动按英雄分开保留，换一次决策还在。</p>
+      <div id="rs-results"></div>
+    </div>
+  </section>
+</main>
+<script type="module" src="view.js"></script>
+</body>
+</html>

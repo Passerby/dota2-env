@@ -198,10 +198,14 @@ python examples/llm_match.py --config configs/match.example.yaml --dry-run
 决策是异步的：每个 agent 按自己的 `decision_interval`（游戏秒）发请求，慢的模型只是决策得更少，
 不会冻住游戏。`plan_length` 让模型一次给出一串连续动作（一行一个，如 `MOVE, 1180, -1216`、`ATTACK, 3`，
 最后一行是理由），一帧下发一个，填掉决策之间的空档；请求是流式的，第一行一到就下发，不等模型写完。带 token / 花费计量与硬上限、all-chat 喊话、队内信息共享、JSONL 日志
-（`log_prompts` 连 prompt 一起存，方便调试）。system 里有本英雄每个技能和天赋的官方中文说明，user 里有身上物品的说明
-（价格、合成、神秘商店）、地形、看得见的敌方英雄和各路兵线（带绝对坐标）、神符点、地标，最后是最近几条命令和下发时英雄站的位置。
+（`log_prompts` 连 prompt 一起存，方便调试）。system 里有本英雄每个技能和天赋的官方中文说明，以及本模式神符、智慧神龛、
+莲花池什么时候在哪出现（实测的时间表，`data/events.json`）；user 里有身上物品的说明（价格、合成、神秘商店）、地形、
+看得见的敌方英雄和各路兵线（带绝对坐标）、神符点、地标、这几样东西下一次什么时候来，最后是最近几条命令和下发时英雄站的位置。
 `MOVE, x, y` 下的是 `MOVE_TO`，由游戏自己寻路走到那里。每个键的含义、prompt 的组成、节奏语义、token 估算和已知限制见
 [docs/LLM_MATCH.md](docs/LLM_MATCH.md)；配置模板是 [configs/match.example.yaml](configs/match.example.yaml)。
+
+调 prompt 用 `python scripts/prompt_debugger.py --config configs/<配置>.yaml`：浏览器里逐次看模型收到的 prompt、
+回复每行怎么被读的、哪一步被拒了，也能把某一次的 prompt 改了用同一个 gateway 重发几份对比（LLM_MATCH.md §7）。
 
 现在一队 LLM 打内置 bot；两队都是 LLM 还没接（原因见 LLM_MATCH.md §10）。
 
@@ -212,8 +216,9 @@ dota2_env/
   envs/mid1v1.py     DotaMid1v1Env（gymnasium.Env）
   envs/allpick5v5.py DotaAllPick5v5Env（一队 5 个英雄）
   observation.py     worldstate -> numpy 观测、单位表、队伍观测
-  map_features.py    map.json 的加载、每局的树表、观测的地图部分（local_map / runes / landmarks）
-  data/              map.json（地图）和 items / abilities / heroes.json（中英文技能物品文本、合成、神秘商店），都由 scripts/ 生成
+  map_features.py    map.json 的加载、每局的树表、观测的地图部分（local_map / runes / landmarks），events.json 的时间表
+  data/              map.json（地图）、items / abilities / heroes.json（中英文技能物品文本、合成、神秘商店）和
+                     events.json（神符 / 智慧神龛 / 莲花的刷新时间表），都由 scripts/ 生成
   game_text.py       读 data/ 的文本：官方中英文名、本英雄技能说明、物品说明（价格 / 合成 / 神秘商店）
   actions.py         动作空间、合法性 mask、到 bridge 动作的翻译
   rewards.py         LaningReward / Mid1v1Rules、TeamReward / AllPick5v5Rules
@@ -233,8 +238,9 @@ examples/            random_agent / scripted_agent / scripted_5v5 / llm_agent / 
 configs/             LLM 对局配置模板
 scripts/             probe_worldstate.py（新客户端兼容性探测）、probe_http.py（bot VM 的 HTTP 能力探测）、
                      check_match.py（把一份 LLM 对局日志读成一页体检报告）、
+                     prompt_debugger.py + prompt_debugger/（浏览对局日志、改 prompt 重发的本地网页）、
                      extract_map.py + map_scan.lua（导出 map.json）、fetch_game_text.py（导出中英文文本）、
-                     probe_trees.py（核对 tree_id）
+                     probe_trees.py（核对 tree_id）、probe_events.py（实测刷新时间，导出 events.json）
 docs/                FEATURES.md、PARAMETERS.md、LLM_MATCH.md、VERSION_DIFF.md、BRIDGE_ACTIONS.md、IPC_CHANNELS.md、
                      MAP_DATA.md、SERVER_VM.md、REFERENCES.md
 ```

@@ -301,6 +301,45 @@ OrderType / TargetIndex / AbilityIndex / Position / Queue`（二进制里的键�
 - `special_bonus_attributes` 在 10 级时 `ActionImmediate_LevelAbility` 被拒；服务器的 `HeroLevelUp` 一路升到 25 级时它自己涨到了
   7 级（扣技能点）。正常升级会不会这样没测 ⚠️。
 
+## 3.3 神符、智慧神龛、莲花池什么时候来（2026-09 实测，ClientVersion 6938）
+
+[`scripts/probe_events.py`](../scripts/probe_events.py)：无头、英雄都不动，5v5 打到 22:00、1v1 打到 15:00，4 倍速。服务器 VM
+看得到整张地图：每个 `dota_item_rune` 实体一出现就记下时间、位置和模型，15 秒后用 `UTIL_Remove` 拿走，免得没人捡的符挡住
+下一个；英雄从号角起就站在智慧神龛旁、小精灵站在莲花池里，神龛一启动、莲花一长出来就被拿走，看经验和物品栏什么时候变就知道
+时间；5v5 最后 50 秒再让另一个小精灵走进一直没人碰的莲花池，数它存了几朵。推出来的时间表写进 `dota2_env/data/events.json`
+（[MAP_DATA.md](MAP_DATA.md) §3.1），写之前每一次神符刷新都要落在服务器 VM 的 `GameRules:GetNextBountyRuneSpawnTime()` /
+`GetNextRuneSpawnTime()` 报过的倒计时上 ✅。
+
+| | 5v5（gamemode 1） | 1v1 中路（gamemode 21） | 在哪 |
+|---|---|---|---|
+| 赏金神符 | 0:00；4:00 起每 4 分钟 | 4:00 起每 4 分钟 | 0:00 四个神符点各一个；之后只在上路 / 下路赏金神符点 |
+| 圣水神符 | 2:00、4:00 | 4:00 | 两个强化神符点各一个 |
+| 强化神符 | 6:00 起每 2 分钟 | 同左 | 两个强化神符点里随机一处；5v5 那局 8 个里 7 种都出现了 |
+| 智慧神龛 | 7:00 起每 7 分钟 | 同左 | 两个神龛各自启动；站进 300 以内 3 秒后给经验，7:00 / 14:00 / 21:00 依次 200 / 500 / 800 |
+| 疗伤莲花 | 3:00 起每 3 分钟 | 同左 | 两个莲花池各长一朵；一个池子最多存 6 朵（5v5 的池子到 21:00 该长 7 朵，只采到 6） |
+
+- 1v1 的倒计时照样报 0:00 和 2:00（号角前 `GetNextBountyRuneSpawnTime` 是 0、`GetNextRuneSpawnTime` 是 120），但这两次什么都
+  不刷，和 3.2 里"1v1 中路模式 0:00 不刷神符"一致。所以探针只要求刷出来的都在倒计时上，反过来不要求。
+- 以前以为的"赏金神符每 3 分钟、6:00 前后才有强化神符"都不对：客户端术语表 `DOTA_Glossary_Gold_BountyRunes` 自己也写着每 4 分钟。
+- 神龛 7:00 之前站过去不给经验（1:00 站 8 秒，0 → 0）；一次启动被拿走以后，同一轮再站过去什么都没有（7:30）。客户端的
+  console.log 会自己记一行 `XP Fountain: Unit npc_dota_hero_nevermore gains 500 XP`。
+- 莲花不是地上的物品，池子和神龛单位身上也看不出来：整局 `npc_dota_lotus_pool` 的 `modifier_passive_lotus_pool_building`
+  层数一直是 0、`ability_lotus_pool` 充能一直是 0，`npc_dota_xp_fountain` 的 `ability_xp_fountain` 充能一直是 1。所以 world state
+  里没有池子里有几朵、神龛这一轮拿没拿，环境只能按时间表算（`map_features.upcoming`）。
+- 采莲花不用持续施法，英雄技能栏里也没有 `ability_pluck_lotus`：站进 350 以内就自动把池子里的都采走，第一朵 1.5 秒，之后每朵快
+  70%，最少 0.3 秒（`ability_lotus_pool` 的数值）。三朵疗伤莲花自动合成大疗伤莲花，两朵大的合成巨大疗伤莲花；两朵疗伤莲花是一件
+  `item_famango`，充能 2。
+- 顺带看到、还没进时间表的：昼夜 5 分钟一换（0:00 天亮）；肉山开局在上坑，15:00 入夜时走到下坑，20:00 天亮时走回上坑；
+  痛苦魔方（`npc_dota_miniboss`）20:00 在两边同时刷出。
+
+**world state 里的神符**（开发探针时的三局 5v5，天辉给了神符点的视野，夜魇没有）：
+- 有视野：刷出来那一帧就是 AVAILABLE，type 也对（0:00 是 5 赏金，4:00 强化神符点上是 7 圣水）；被拿走后变回 type -1、MISSING。
+- 没视野：0:00 四个点里三个直接报 type 5；有一局上路强化神符点从 0:00 一直报 type 5 到 6:00，其间 2:00、4:00 那里刷的其实是
+  圣水神符；6:00 的强化神符只报 AVAILABLE、type -1。所以文本里 `available` 后面的神符名只是"最后一次知道的种类"。
+- 探针删过神符之后，天辉那一路 world state 三局都在 4:15 那一批删完后读不下去了（`DecodeError: Wire format was corrupt`，
+  第三局用的是环境自己的 `worldstate_listener` 进程，一样），有一局夜魇那一路也断了。原因没查清 ⚠️，所以探针只用服务器 VM 的
+  记录，不读 world state。正常对局里神符是被捡走的，不是被删掉的。
+
 ## 4. Python 层
 
 | | 旧仓库 | dota2-env |

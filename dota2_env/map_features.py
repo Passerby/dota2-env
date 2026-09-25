@@ -1,7 +1,8 @@
-"""Static map data (dota2_env/data/map.json) and the map part of an observation.
+"""Static map data (dota2_env/data/map.json, events.json) and the map part of an observation.
 
 map.json is extracted from the installed client by scripts/extract_map.py (docs/MAP_DATA.md). Its
-tree ids are the bot API's, which are also the ids that world-state tree events carry.
+tree ids are the bot API's, which are also the ids that world-state tree events carry. events.json is
+when runes, shrine activations and lotuses come, measured by scripts/probe_events.py.
 """
 
 import functools
@@ -10,6 +11,7 @@ import logging
 import math
 import os
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 
@@ -20,6 +22,7 @@ logger = logging.getLogger('dota2_env')
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
 MAP_PATH = os.path.join(DATA_DIR, 'map.json')
+EVENTS_PATH = os.path.join(DATA_DIR, 'events.json')
 MAP_SCALE = 8192.0
 MAP_RADIUS = 16  # cells on either side of the hero's own: the local map is 33 x 33 cells of 64 units
 SPOT_RADIUS = 200.0  # a rune or building this close to a spot of map.json is the one standing on it
@@ -42,6 +45,59 @@ LANDMARKS = (
     'outpost_bottom',
 )
 LANDMARK_FEATURES = ('rel_x', 'rel_y', 'distance', 'is_ours')
+
+GameMode = Literal['mid1v1', 'allpick5v5']
+EventKind = Literal['bounty', 'water', 'power', 'wisdom', 'lotus']
+
+
+@dataclass(kw_only=True, frozen=True)
+class MapEvent:
+    """One entry of events.json: runes, shrine activations or lotuses that come to spots at set times."""
+
+    kind: EventKind
+    spots: tuple[str, ...]  # RUNE_SPOTS or LANDMARKS names
+    times: tuple[int, ...] = ()  # every dota_time it comes at, when it does not repeat
+    first: int | None = None  # when it repeats: the first time and the interval
+    every: int | None = None
+    one_of: bool = False  # it comes to one of the spots each time, not to all of them
+    max: int | None = None  # how many a spot holds, when the probe saw one fill up
+    amounts: tuple[int, ...] = ()  # what each of its first comings gave (a shrine's experience), where measured
+
+    def next_time(self, dota_time: float) -> int | None:
+        """The first time after dota_time it comes, None when it never comes again."""
+        if self.first is None or self.every is None:
+            return next((time for time in self.times if time > dota_time), None)
+        elapsed = max(dota_time - self.first, -self.every)
+        return self.first + (int(elapsed // self.every) + 1) * self.every
+
+
+@functools.cache
+def read_events(path: str = EVENTS_PATH) -> dict[str, object]:
+    """events.json as read, once per process: the abilities' values and each game mode's entries."""
+    with open(path, encoding='utf-8') as handle:
+        return json.load(handle)
+
+
+@functools.cache
+def load_events(mode: GameMode, path: str = EVENTS_PATH) -> tuple[MapEvent, ...]:
+    """The entries of events.json for one game mode."""
+    return tuple(
+        MapEvent(**{**entry, **{key: tuple(entry[key]) for key in ('spots', 'times', 'amounts')}})
+        for entry in read_events(path)[mode]
+    )
+
+
+def upcoming(mode: GameMode, dota_time: float) -> list[tuple[int, MapEvent]]:
+    """The next time each kind comes after dota_time, soonest first, with the entry it comes by.
+
+    A kind that never comes again is left out.
+    """
+    soonest: dict[str, tuple[int, MapEvent]] = {}
+    for event in load_events(mode):
+        time = event.next_time(dota_time)
+        if time is not None and (event.kind not in soonest or time < soonest[event.kind][0]):
+            soonest[event.kind] = (time, event)
+    return sorted(soonest.values(), key=lambda pair: pair[0])
 
 
 @dataclass(kw_only=True, frozen=True)

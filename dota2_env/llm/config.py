@@ -16,10 +16,10 @@ import yaml
 
 from dota2_env.bridge.constants import TEAM_DIRE, TEAM_RADIANT
 from dota2_env.game_text import load_records
+from dota2_env.map_features import GameMode as Mode
 from dota2_env.observation import TEAM_SIZE
 
 Control = Literal['agent', 'builtin', 'idle']
-Mode = Literal['mid1v1', 'allpick5v5']
 Position = Literal['safe', 'mid', 'offlane', 'support', 'hard_support']
 
 CONTROLS: tuple[Control, ...] = ('agent', 'builtin', 'idle')

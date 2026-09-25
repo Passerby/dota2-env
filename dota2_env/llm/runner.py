@@ -69,6 +69,7 @@ class Slot:
     reading: Reading = field(default_factory=Reading)
     plan: list[str] = field(default_factory=list)  # steps left to carry out, one per frame
     plan_handles: list[int] = field(default_factory=list)  # unit rows of the frame the plan was made on
+    plan_decided_at: float = 0.0  # dota_time of that frame, which ties a rejected step to its decision record
     requests: int = 0
     replies: int = 0
     errors: int = 0
@@ -113,6 +114,20 @@ class TeamRunner:
             )
             for config in team.agents
         ]
+        # Note (ruidu): what every request of an agent carries besides its user message, written once ahead of any
+        # decision so a transcript alone shows what the model was told; scripts/prompt_debugger.py reads it.
+        for slot in self.slots:
+            self.record(
+                'agent',
+                nickname=slot.config.nickname,
+                hero=slot.config.hero,
+                position=slot.config.position,
+                gateway=slot.config.gateway,
+                model=slot.gateway.config.model,
+                params={**slot.gateway.config.params, **slot.config.params},
+                plan_length=match.plan_length,
+                system=slot.system,
+            )
         self.threads = [threading.Thread(target=work, args=(slot,), daemon=True) for slot in self.slots]
         for thread in self.threads:
             thread.start()
@@ -166,11 +181,18 @@ class TeamRunner:
                 slot.history.append(agent.Note(kind=kind, dota_time=dota_time, position=spot, step=step, error=error))
             if error:
                 slot.parse_errors += 1
-                self.record('rejected', nickname=slot.config.nickname, dota_time=dota_time, step=step, error=error)
+                self.record(
+                    'rejected',
+                    nickname=slot.config.nickname,
+                    dota_time=dota_time,
+                    decided_at=round(slot.plan_decided_at, 2),
+                    step=step,
+                    error=error,
+                )
 
         due = [row for row, slot in enumerate(self.slots) if self.is_due(slot, dota_time)]
         if due:
-            blocks = hero_blocks(world_state, self.team_id, player_ids, cast_slots, trees)
+            blocks = hero_blocks(world_state, self.team_id, player_ids, cast_slots, trees, mode=self.match.mode)
             for row in due:
                 items = [
                     name
@@ -207,6 +229,7 @@ class TeamRunner:
                 if kind == 'step' and len(reading.steps) < self.match.plan_length:
                     if not reading.steps:
                         slot.plan, slot.plan_handles = [], list(request.unit_handles)
+                        slot.plan_decided_at = request.dota_time
                     reading.steps.append(text)
                     slot.plan.append(text)
                 elif kind == 'reason':

@@ -245,6 +245,14 @@ def test_one_number_is_a_direction():
 def test_a_step_that_does_not_read_is_rejected_with_the_reason(step, error):
     action, message = decide_one(step, hero_mask(attackable=[0]), [7], [7], position=(0.0, 0.0))
     assert action['type'] == int(ActionType.NOOP) and message == error
+    with pytest.raises(ValueError, match=error):
+        agent.read_step(step)
+
+
+def test_a_step_reads_as_its_type_and_named_numbers_without_a_frame():
+    assert agent.read_step('cast_target, 1, 3') == ('CAST_TARGET', {'S': 1.0, 'N': 3.0})
+    assert agent.read_step('MOVE, (-1544), (-1408)') == ('MOVE', {'x': -1544.0, 'y': -1408.0})
+    assert agent.read_step('NOOP') == ('NOOP', {})
 
 
 @pytest.mark.parametrize(
@@ -324,6 +332,21 @@ def test_the_system_prompt_places_both_bases_in_the_coordinates_of_pos():
     assert '天辉: 遗迹 (-5920, -5352); 上路一塔 (-6336, 1856);' in prompt and '夜魇: 遗迹 (5528, 5000);' in prompt
     assert prompt.count('塔 (') == 22  # three per lane and two in the base, on each side
     assert '下路强化神符 (1180, -1216)' in prompt and '上路前哨 (-4096, -448)' in prompt
+
+
+def test_the_system_prompt_says_when_runes_shrines_and_lotuses_come():
+    match = match_config()
+    prompt = agent.system_prompt(match.radiant.agents[0], match, TEAM_RADIANT)
+    # the times, spots and numbers are events.json's, measured on the client by scripts/probe_events.py
+    assert (
+        '- 赏金神符：0:00 在上路强化神符、下路强化神符、上路赏金神符、下路赏金神符各刷一个；'
+        '4:00 起每 4 分钟在上路赏金神符、下路赏金神符各刷一个。'
+    ) in prompt
+    assert '- 强化神符：6:00 起每 2 分钟在上路强化神符、下路强化神符其中一处刷一个，是增伤神符、极速神符、' in prompt
+    assert '走到神龛 300 距离内站 3 秒' in prompt and '（前 3 次依次是 200、500、800）' in prompt
+    assert '在上路莲花池、下路莲花池各长一朵，每个莲花池最多存 6 朵。' in prompt
+    lone = agent.system_prompt(match.radiant.agents[0], dataclasses.replace(match, mode='mid1v1'), TEAM_RADIANT)
+    assert '- 赏金神符：4:00 起每 4 分钟' in lone  # the 1v1 has no runes at 0:00
 
 
 def test_every_position_and_mode_has_its_own_lines():
@@ -523,6 +546,10 @@ def test_the_user_message_opens_with_the_items_and_carries_the_map(env):
     assert prompt.startswith('你身上的物品：\n- item_tango 树之祭祀（Tango）：价格 90')
     assert prompt.index('你身上的物品') < prompt.index('time ') < prompt.index('你的队友')
     assert 'terrain: height ' in prompt and 'rune spots: [0] 上路强化神符 dist ' in prompt
+    # the fake match is at -1:15, so the first bounty runes, one at each rune spot, are the next thing to come
+    coming = prompt.split('\nupcoming:\n')[1].splitlines()
+    assert coming[0].startswith('  0:00 in 1:1') and ' 赏金神符: 上路强化神符 at (-1640, 1112) dist ' in coming[0]
+    assert coming[0].count(' at (') == 4 and coming[1].startswith('  2:00 in ')
 
 
 def test_the_prompt_repeats_the_command_that_went_out(env):
@@ -538,11 +565,23 @@ def test_the_prompt_repeats_the_command_that_went_out(env):
 def test_the_transcript_records_every_decision(env, tmp_path):
     path = tmp_path / 'match.jsonl'
     gateway = FakeGateway()
+    gateway.config.params = {'temperature': 0.3, 'max_tokens': 200}
+    match = match_config()
+    match.radiant.agents[0].params = {'max_tokens': 60}
     with open(path, 'w') as transcript:
-        runner = TeamRunner(match_config(), match_config().radiant, {'fake': gateway}, transcript)
+        runner = TeamRunner(match, match.radiant, {'fake': gateway}, transcript)
         drive(env, runner, 3)
         runner.close()
     records = read_transcript(path)
+    headers, records = records[:TEAM_SIZE], records[TEAM_SIZE:]
+    # one header per agent in YAML order, ahead of every decision, holding what each request carried
+    assert [(header['kind'], header['nickname']) for header in headers] == [
+        ('agent', f'A{row}') for row in range(TEAM_SIZE)
+    ]
+    assert headers[0]['system'] == agent.system_prompt(match.radiant.agents[0], match, TEAM_RADIANT)
+    assert headers[0]['hero'] == HEROES[0] and headers[0]['model'] == 'm' and headers[0]['plan_length'] == 1
+    assert headers[0]['params'] == {'temperature': 0.3, 'max_tokens': 60}  # the agent's own params win
+    assert headers[1]['params'] == {'temperature': 0.3, 'max_tokens': 200}
     assert records and all(record['kind'] == 'decision' for record in records)
     assert {record['nickname'] for record in records} == {f'A{row}' for row in range(TEAM_SIZE)}
     first = records[0]
@@ -653,7 +692,7 @@ def test_steps_past_plan_length_are_dropped_but_the_reason_is_still_read(env, tm
         runner.close()
     first = [step[0]['type'] for step in applied]
     assert first[1:] == [int(ActionType.MOVE)] * 2 + [int(ActionType.NOOP)]
-    decision = read_transcript(path)[0]
+    decision = next(record for record in read_transcript(path) if record['kind'] == 'decision')
     assert decision['plan'] == ['MOVE, 4'] * 2
     assert decision['reason'] == 'wave is pushing, walk up and hit the ranged creep'
 
@@ -759,9 +798,13 @@ def test_a_rejected_planned_action_is_recorded_when_it_is_applied(env, tmp_path)
         runner = TeamRunner(match, match.radiant, {'fake': gateway}, transcript)
         drive(env, runner, 3)
         runner.close()
-    rejected = [record for record in read_transcript(path) if record['kind'] == 'rejected']
+    records = read_transcript(path)
+    rejected = [record for record in records if record['kind'] == 'rejected']
     assert rejected and rejected[0]['step'] == 'ATTACK, 31'
     assert runner.slots[0].parse_errors > 0
+    # decided_at names the decision a rejected step came from, wherever the two landed in the file
+    decided = {(record['nickname'], record['decided_at']) for record in records if record['kind'] == 'decision'}
+    assert all((record['nickname'], record['decided_at']) in decided for record in rejected)
 
 
 def test_plan_length_must_be_at_least_one(tmp_path, monkeypatch):

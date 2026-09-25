@@ -7,7 +7,7 @@ Ollama), so there is one client here and no per-provider adapters.
 import json
 import logging
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from dataclasses import dataclass
 
 import httpx
@@ -43,7 +43,7 @@ class Gateway:
             headers={'Authorization': f'Bearer {config.api_key}'},
         )
 
-    def stream(self, messages: list[dict[str, str]], params: dict[str, object]) -> Iterator[str | Reply]:
+    def stream(self, messages: list[dict[str, str]], params: dict[str, object]) -> Generator[str | Reply, None, None]:
         """Yield every line of the reply the moment its newline arrives, then the Reply as a whole.
 
         Blank lines are skipped. The last line needs no newline, but it is held back when the reply was

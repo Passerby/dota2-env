@@ -1,0 +1,21 @@
+{
+"client_version":6938,
+"patch":"7.41f",
+"source":{"client":{"ClientVersion":"6938","VersionDate":"Sep 23 2026","SourceRevision":"11030660"},"match":"headless, idle heroes, host_timescale 4, allpick5v5 to dota_time 1320, mid1v1 to dota_time 900","generated_by":"scripts/probe_events.py"},
+"values":{"ability_xp_fountain":{"countdown_time":3,"radius":300},"ability_lotus_pool":{"min_lotus_pickup_time":0.30000001192093,"pickup_time_reduction_pct":70,"first_lotus_pickup_time":1.5,"radius":350}},
+"allpick5v5":[
+{"kind":"bounty","spots":["power_top","power_bottom","bounty_top","bounty_bottom"],"times":[0],"first":null,"every":null,"one_of":false,"max":null,"amounts":[]},
+{"kind":"bounty","spots":["bounty_top","bounty_bottom"],"times":[],"first":240,"every":240,"one_of":false,"max":null,"amounts":[]},
+{"kind":"water","spots":["power_top","power_bottom"],"times":[120,240],"first":null,"every":null,"one_of":false,"max":null,"amounts":[]},
+{"kind":"power","spots":["power_top","power_bottom"],"times":[],"first":360,"every":120,"one_of":true,"max":null,"amounts":[]},
+{"kind":"wisdom","spots":["wisdom_top","wisdom_bottom"],"times":[],"first":420,"every":420,"one_of":false,"max":null,"amounts":[200,500,800]},
+{"kind":"lotus","spots":["lotus_top","lotus_bottom"],"times":[],"first":180,"every":180,"one_of":false,"max":6,"amounts":[]}
+],
+"mid1v1":[
+{"kind":"bounty","spots":["bounty_top","bounty_bottom"],"times":[],"first":240,"every":240,"one_of":false,"max":null,"amounts":[]},
+{"kind":"water","spots":["power_top","power_bottom"],"times":[240],"first":null,"every":null,"one_of":false,"max":null,"amounts":[]},
+{"kind":"power","spots":["power_top","power_bottom"],"times":[],"first":360,"every":120,"one_of":true,"max":null,"amounts":[]},
+{"kind":"wisdom","spots":["wisdom_top","wisdom_bottom"],"times":[],"first":420,"every":420,"one_of":false,"max":null,"amounts":[200,500]},
+{"kind":"lotus","spots":["lotus_top","lotus_bottom"],"times":[],"first":180,"every":180,"one_of":false,"max":null,"amounts":[]}
+]
+}

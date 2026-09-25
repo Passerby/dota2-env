@@ -59,6 +59,7 @@ def lone_tree_cells(hero_x: float, hero_y: float) -> tuple[np.ndarray, np.ndarra
 def add_map_state(
     ws: CMsgBotWorldState,
     available_runes: set[str],
+    rune_types: dict[str, int],
     outpost_teams: dict[str, int],
     tree_events: list[tuple[int, bool]],
 ) -> None:
@@ -66,7 +67,7 @@ def add_map_state(
     static = load_map()
     for name, (x, y) in zip(RUNE_SPOTS, static.runes, strict=True):
         status = RUNE_STATUS_AVAILABLE if name in available_runes else RUNE_STATUS_MISSING
-        rune = ws.rune_infos.add(type=-1, status=status)
+        rune = ws.rune_infos.add(type=rune_types.get(name, -1), status=status)
         rune.location.x, rune.location.y = x, y
     for name, team in outpost_teams.items():
         x, y = static.landmarks[LANDMARKS.index(name)]
@@ -122,6 +123,7 @@ class FakeSession:
         self.ack_status = 'executed'  # None = lua never sees the file
         self.spawn_delay = 2  # observations without heroes, like the real client
         self.available_runes = set()  # RUNE_SPOTS names with a rune on them
+        self.rune_types = {}  # RUNE_SPOTS name: the world state's rune type, -1 (unknown) where not given
         self.outpost_teams = {'outpost_top': TEAM_RADIANT, 'outpost_bottom': TEAM_DIRE}  # as a match starts
         self.tree_events = []  # (tree id, destroyed) to report with the next frame
         FakeSession.instances.append(self)
@@ -138,7 +140,7 @@ class FakeSession:
         ws.players.add(player_id=5, team_id=TEAM_DIRE, is_alive=True)
         _add_unit(ws, 100, UNIT_TYPE_TOWER, TEAM_RADIANT, 'npc_dota_goodguys_tower1_mid', -1544, -1408, 1800)
         _add_unit(ws, 101, UNIT_TYPE_TOWER, TEAM_DIRE, 'npc_dota_badguys_tower1_mid', 524, 652, 1800)
-        add_map_state(ws, self.available_runes, self.outpost_teams, self.tree_events)
+        add_map_state(ws, self.available_runes, self.rune_types, self.outpost_teams, self.tree_events)
         if self.spawn_delay > 0:
             self.spawn_delay -= 1
             return ws
@@ -301,6 +303,7 @@ class Fake5v5Session:
         self.ack_status = 'executed'
         self.spawn_delay = 2  # observations without heroes, like the real client
         self.available_runes = set()  # RUNE_SPOTS names with a rune on them
+        self.rune_types = {}  # RUNE_SPOTS name: the world state's rune type, -1 (unknown) where not given
         self.outpost_teams = {'outpost_top': TEAM_RADIANT, 'outpost_bottom': TEAM_DIRE}  # as a match starts
         self.tree_events = []  # (tree id, destroyed) to report with the next frame
         Fake5v5Session.instances.append(self)
@@ -324,7 +327,7 @@ class Fake5v5Session:
                 _add_unit(ws, ANCIENT_HANDLE[team], UNIT_TYPE_FORT, team, name, x, y, self.ancient_health[team], 4500)
         _add_unit(ws, 100, UNIT_TYPE_TOWER, TEAM_RADIANT, 'npc_dota_goodguys_tower1_mid', -1544, -1408, 1800)
         _add_unit(ws, 101, UNIT_TYPE_TOWER, TEAM_DIRE, 'npc_dota_badguys_tower1_mid', 524, 652, 1800)
-        add_map_state(ws, self.available_runes, self.outpost_teams, self.tree_events)
+        add_map_state(ws, self.available_runes, self.rune_types, self.outpost_teams, self.tree_events)
         if self.spawn_delay > 0:
             self.spawn_delay -= 1
             return ws

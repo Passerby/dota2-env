@@ -17,12 +17,13 @@ import jinja2
 import numpy as np
 
 from dota2_env import actions
-from dota2_env.bridge.constants import TEAM_RADIANT
+from dota2_env.bridge.constants import RUNE_BOUNTY, RUNE_WATER, TEAM_RADIANT
 from dota2_env.bridge.protos.dota_gcmessages_common_bot_script_pb2 import CMsgBotWorldState
 from dota2_env.game_text import display_name, hero_text, item_text, load_records
 from dota2_env.llm.config import AgentConfig, MatchConfig, Position
+from dota2_env.map_features import MapEvent, load_events, read_events
 from dota2_env.observation import N_TALENTS, TALENT_LEVELS
-from dota2_env.text import LANES, TEAMS, clock, map_reference
+from dota2_env.text import LANES, RUNE_TYPES, TEAMS, clock, event_name, map_reference, spot_name
 
 CHAT_LIMIT = 80  # all-chat is a taunt channel, not a place to think out loud
 REASON_LIMIT = 200
@@ -69,8 +70,11 @@ PROMPTS = jinja2.Environment(
 )
 PROMPTS.filters['display_name'] = display_name
 PROMPTS.filters['clock'] = clock
+PROMPTS.filters['spot_name'] = spot_name
+PROMPTS.filters['event_name'] = event_name
 PROMPTS.globals['positions'] = POSITION_NAME
-SYSTEM = PROMPTS.get_template('system.jinja')
+# Note (ruidu): bound once so an edit to user.jinja while a match runs cannot reach decide(), where a half-written
+# template would end the match; system.jinja is looked up per call instead, see system_prompt().
 USER = PROMPTS.get_template('user.jinja')
 
 
@@ -88,7 +92,14 @@ class Note:
 def system_prompt(agent: AgentConfig, match: MatchConfig, team_id: int) -> str:
     """Fixed for the whole match, so gateways that cache prompt prefixes actually get a hit."""
     radiant = team_id == TEAM_RADIANT
-    return SYSTEM.render(
+    # Note (ruidu): looked up on every call, not once at import, so scripts/prompt_debugger.py renders an edited
+    # system.jinja without a restart; jinja re-reads the file only when its mtime changed, and a match calls this
+    # once per agent at start.
+    template = PROMPTS.get_template('system.jinja')
+    events: dict[str, list[MapEvent]] = {}
+    for event in load_events(match.mode):
+        events.setdefault(event.kind, []).append(event)
+    return template.render(
         agent=agent,
         match=match,
         side=TEAMS[team_id]['zh'],
@@ -99,6 +110,9 @@ def system_prompt(agent: AgentConfig, match: MatchConfig, team_id: int) -> str:
         talents=[display_name(name) for name in load_records('heroes')[agent.hero]['talents'][:N_TALENTS]],
         talent_levels=TALENT_LEVELS,
         tp=load_records('items')[actions.TP_SCROLL]['values'],
+        events=events,
+        event_values=read_events()['values'],
+        power_runes=[names['zh'] for rune, names in RUNE_TYPES.items() if rune not in (RUNE_BOUNTY, RUNE_WATER)],
         frame=match.ticks_per_observation / TICKS_PER_GAME_SECOND,
         chat_limit=CHAT_LIMIT,
     ).removesuffix('\n')
@@ -142,6 +156,26 @@ def read_line(line: str) -> tuple[Literal['step', 'reason', 'say'] | None, str]:
     return 'step', line
 
 
+def read_step(step: str) -> tuple[str, dict[str, float]]:
+    """The action type and named numbers of one step, ('CAST_TARGET', {'S': 1.0, 'N': 3.0}) for "CAST_TARGET, 1, 3".
+
+    Raises ValueError, saying why, when the step is written like none of the FORMS.
+    """
+    head, *fields = step.split(',')
+    kind = head.strip().upper()
+    if kind not in FORMS:
+        raise ValueError(f'{head.strip()!r} is not an action type')
+    # Note (ruidu): a model copying a point off the map table brings the brackets along.
+    fields = [field.strip(' ()') for field in fields]
+    names = next((names for names in FORMS[kind] if len(names) == len(fields)), None)
+    if names is None:
+        raise ValueError(f'{kind} is written ' + ' or '.join(', '.join((kind, *names)) for names in FORMS[kind]))
+    wrong = [field for field in fields if not RE_NUMBER.fullmatch(field)]
+    if wrong:
+        raise ValueError(f'{wrong[0]!r} is not a number')
+    return kind, {name: float(field) for name, field in zip(names, fields, strict=True)}
+
+
 def resolve(
     step: str,
     mask: dict[str, np.ndarray],
@@ -157,19 +191,10 @@ def resolve(
     stands on this frame (position), not where it stood.
     """
     noop = actions.NOOP_ACTION.copy()
-    head, *fields = step.split(',')
-    kind = head.strip().upper()
-    if kind not in FORMS:
-        return noop, f'{head.strip()!r} is not an action type'
-    # Note (ruidu): a model copying a point off the map table brings the brackets along.
-    fields = [field.strip(' ()') for field in fields]
-    names = next((names for names in FORMS[kind] if len(names) == len(fields)), None)
-    if names is None:
-        return noop, f'{kind} is written ' + ' or '.join(', '.join((kind, *names)) for names in FORMS[kind])
-    wrong = [field for field in fields if not RE_NUMBER.fullmatch(field)]
-    if wrong:
-        return noop, f'{wrong[0]!r} is not a number'
-    values = {name: float(field) for name, field in zip(names, fields, strict=True)}
+    try:
+        kind, values = read_step(step)
+    except ValueError as e:
+        return noop, str(e)
     if kind in ('MOVE', 'TP') and 'x' in values:
         point_type = 'MOVE_TO' if kind == 'MOVE' else kind
         return actions.parse_action({'type': point_type, 'point': (values['x'], values['y'])}, mask)

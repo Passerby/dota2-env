@@ -55,7 +55,9 @@ class TextWrapper(gym.Wrapper):
 
     def _text(self, info):
         base = self.env.unwrapped
-        return describe(info['world_state'], base.team_id, cast_slots=base.cast_slots(), trees=base.trees)
+        return describe(
+            info['world_state'], base.team_id, cast_slots=base.cast_slots(), trees=base.trees, mode='mid1v1'
+        )
 
     def reset(self, **kwargs):
         _, info = self.env.reset(**kwargs)

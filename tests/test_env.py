@@ -1,4 +1,5 @@
 import json
+import re
 import socket
 import struct
 import threading
@@ -303,6 +304,27 @@ def test_text_shows_the_tp_slot_the_stash_and_the_talents(env):
         last_session().sent[-1][1][0]['trainAbility']['ability']
         == 'special_bonus_unique_nevermore_frenzy_max_collection_count'
     )
+
+
+def test_text_names_the_runes_the_team_knows_and_what_comes_next(env):
+    text_env = TextWrapper(env)
+    text_env.reset()
+    session = last_session()
+    session.available_runes, session.rune_types = {'power_top', 'bounty_top'}, {'power_top': 1}
+    text, *_ = text_env.step('{"type": "NOOP"}')
+    runes = next(line for line in text.splitlines() if line.startswith('rune spots: '))
+    assert ' available 极速神符; [1] ' in runes  # a haste rune
+    assert ' available; [3] ' in runes  # a rune whose kind the world state does not give
+    coming = text.split('\nupcoming:\n')[1].split('\nlegal action types')[0].splitlines()
+    # the 1v1's own schedule (events.json): nothing at 0:00 or 2:00, then soonest first, every place written out
+    assert [row.split()[0] for row in coming] == ['3:00', '4:00', '4:00', '6:00', '7:00']
+    lotus = r'  3:00 in 4:2\d 疗伤莲花: 上路莲花池 at \(-7548, 4209\) dist \d+, 下路莲花池 at \(7504, -4405\) dist \d+'
+    assert re.fullmatch(lotus, coming[0])
+    assert ' 赏金神符: 上路赏金神符 at (-996, 4431) dist ' in coming[1]
+    assert re.search(r' 强化神符: 上路强化神符 at \(-1640, 1112\) dist \d+ or 下路强化神符 at ', coming[3])
+    session.dota_time = 250.0
+    text, *_ = text_env.step('{"type": "NOOP"}')
+    assert '圣水神符' not in text.split('\nupcoming:\n')[1]  # the 1v1 has water runes at 4:00 only
 
 
 def test_last_hit_is_rewarded(env):

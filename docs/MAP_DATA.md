@@ -3,9 +3,10 @@
 实测环境：macOS（arm64），Dota 2 `steam.inf` ClientVersion **6934 / VersionDate 2026-09-18**，
 补丁 **7.41f**（2026-09-15）。脚本：[`scripts/extract_map.py`](../scripts/extract_map.py) +
 [`scripts/map_scan.lua`](../scripts/map_scan.lua)、[`scripts/fetch_game_text.py`](../scripts/fetch_game_text.py)、
-[`scripts/probe_trees.py`](../scripts/probe_trees.py)。✅ = 本机实测，⚠️ = 未验证或他人报告。
+[`scripts/probe_trees.py`](../scripts/probe_trees.py)、[`scripts/probe_events.py`](../scripts/probe_events.py)（`events.json`，
+ClientVersion 6938）。✅ = 本机实测，⚠️ = 未验证或他人报告。
 
-仓库里的四个数据文件都是脚本生成的，**不要手改**，换客户端版本就重跑：
+仓库里的五个数据文件都是脚本生成的，**不要手改**，换客户端版本就重跑：
 
 | 文件 | 内容 | 生成脚本 |
 |---|---|---|
@@ -13,9 +14,11 @@
 | `dota2_env/data/items.json` | 物品：价格、能否购买、合成配方、是否神秘商店有售、冷却、蓝耗、数值，中英文名称 / 说明 / 备注 | `fetch_game_text.py` |
 | `dota2_env/data/abilities.json` | 技能与天赋：被动 / 先天 / 需要神杖或魔晶、冷却、蓝耗、施法距离、数值，中英文名称 / 说明 / 备注 / 魔晶 / 神杖 | `fetch_game_text.py` |
 | `dota2_env/data/heroes.json` | 英雄：按技能栏顺序的技能、天赋，中英文名 | `fetch_game_text.py` |
+| `dota2_env/data/events.json` | 每种模式下神符、智慧神龛、疗伤莲花什么时候在哪出现，神龛 / 莲花池被动技能的数值，神龛每次给的经验 | `probe_events.py` |
 
 `map.json` 由观测的地图部分（`dota2_env/map_features.py`，见 [FEATURES.md](FEATURES.md)）读取；
-文本三件套由 `dota2_env/game_text.py` 读取，拼进文本状态（`text.py`）和 LLM 对局的 prompt（[LLM_MATCH.md](LLM_MATCH.md) §8）。
+文本三件套由 `dota2_env/game_text.py` 读取，拼进文本状态（`text.py`）和 LLM 对局的 prompt（[LLM_MATCH.md](LLM_MATCH.md) §8）；
+`events.json` 由 `map_features.load_events()` 读取，成为文本状态的 `upcoming` 块和 system prompt 里的"地图上定时出现的东西"。
 
 ## 1. 每个字段从哪来
 
@@ -77,6 +80,11 @@ curl -sSL -o cli.zip https://github.com/ValveResourceFormat/ValveResourceFormat/
 ```
 
 ```bash
+# 神符 / 智慧神龛 / 莲花的时间表：需要 Steam 在运行，无头 5v5 打到 22:00、1v1 打到 15:00，4 倍速约 12 分钟
+.venv/bin/python -u scripts/probe_events.py --patch 7.41f
+```
+
+```bash
 # 可选：确认 tree_id 仍然和 world state 的 tree_events 对得上，并看一次树重生（约 3 分钟）
 .venv/bin/python -u scripts/probe_trees.py
 ```
@@ -86,6 +94,9 @@ curl -sSL -o cli.zip https://github.com/ValveResourceFormat/ValveResourceFormat/
   改了合并逻辑只想重算，用 `--reuse-scan`，不用再开 Dota。
 - 环境构造时 `warn_if_stale` 会比较本机 `steam.inf` 的 ClientVersion 和 `map.json` 的
   `client_version`，不一致就打 warning。**地图补丁会改树的编号**，这时树通道会悄悄错位，必须重跑。
+- `probe_events.py` 把每个神符的刷新时间和服务器 VM 的 `GameRules:GetNextBountyRuneSpawnTime()` /
+  `GetNextRuneSpawnTime()` 报过的倒计时逐个核对，有一个不在里面就以非零状态退出，不覆盖 `events.json`。
+  两局的原始记录留在 `--work`（默认 `$TMPDIR/dota2_env_events`），`--reuse-scan` 只重算不开游戏。
 
 ## 3. `map.json` 的格式
 
@@ -125,6 +136,23 @@ curl -sSL -o cli.zip https://github.com/ValveResourceFormat/ValveResourceFormat/
 
 治疗圣坛（`npc_dota_healer`）7.24 起就没有了，实体表里一个都没有；bot API 的 `GetShrine`、`SHRINE_*`
 常量还在，但已无对象可取。
+
+## 3.1 `events.json` 的格式
+
+和 `map.json` 一样，每个顶层字段一行、列表每个元素一行。时间都是 dota_time（秒，号角是 0）。
+
+- `client_version` / `patch` / `source`：同 `map.json`；`source.match` 写着探针那两局是怎么打的。
+- `values`：服务器 VM 从神龛、莲花池的被动技能上读到的数值：`ability_xp_fountain` 的 `radius` / `countdown_time`，
+  `ability_lotus_pool` 的 `radius` / `first_lotus_pickup_time` / `pickup_time_reduction_pct` / `min_lotus_pickup_time`。
+- `allpick5v5` / `mid1v1`：每种模式一张时间表，每条就是一个 `map_features.MapEvent`：
+  - `kind`：`bounty` / `water` / `power` 三种神符，`wisdom`（神龛启动一次），`lotus`（每个池子长一朵）；
+  - `spots`：`RUNE_SPOTS` 或 `LANDMARKS` 里的名字；`one_of` 为 true 时每次只来其中一处（强化神符），否则每处各一个；
+  - 时间二选一：`times` 列出几个时间，`first` + `every` 是从 `first` 起每隔 `every` 一次、一直重复；
+  - `max`：一处最多存几个，探针见过存满的才有（5v5 的莲花池是 6）；`amounts`：前几次各给了多少（神龛的经验）。
+  - 探针的推法（`probe_events.schedule`）：同一组地点上等间隔、一直持续到探针停下的一串时间算重复，其余的列出来。
+
+7.41f / 6938 的结果见 [VERSION_DIFF.md](VERSION_DIFF.md) 3.3。`map_features.upcoming(mode, dota_time)` 给出每一种下一次
+什么时候、在哪，文本状态里的 `upcoming` 块就是它。
 
 ## 4. 实测结论（6934）
 
@@ -243,7 +271,9 @@ respawned 事件改；同一事件重复出现不会重复计数；id 超出 `ma
 
 - 临时树（发芽、种树枝）没有进树表：种树枝不产生任何事件，发芽没测。⚠️
 - 前哨被占领后，world state 里它的 `team_id` 会不会变，还没在长局里看到。⚠️
-- 肉山当前在哪个坑（7.41 起开局在上坑，15:00 后昼夜交替时换坑）、魔方当前在哪一侧，观测里都没有。
+- 肉山当前在哪个坑、魔方刷出来没有，观测里没有，`events.json` 也还没收（6938 实测：肉山开局在上坑，15:00 入夜走到下坑、
+  20:00 天亮走回上坑；魔方 20:00 两边同时刷出，见 VERSION_DIFF.md 3.3）。
+- 莲花池里现在有几朵、神龛这一轮被人拿走没有，world state 里都没有，文本只能按 `events.json` 的时间表说下一次什么时候来。
 - 高度只有级数，没有连续高度（bot VM 没有 `GetGroundHeight(vLoc)`）。
 - 文本没有命石（facet）：datafeed 的技能记录带 `facets_loc`，但 bot 用哪块命石不知道，说明按默认写。
 - 天赋文字有，但环境只按 `ability_priority` 点技能栏 0–5，从不点天赋，所以 prompt 里不放天赋。

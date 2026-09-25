@@ -3,7 +3,8 @@
 Unit rows are numbered exactly like the observation's unit table, so "target 3" in the text is target = 3
 in the action space; skill and item rows carry their ability index and the cast types that can use them.
 Heroes, skills, items and map spots go by the client's own names (dota2_env.game_text); the map lines
-need the match's TreeTable and are left out without one.
+need the match's TreeTable and are left out without one, and the line of what comes next (events.json)
+needs the game mode.
 """
 
 import math
@@ -12,10 +13,27 @@ import re
 import numpy as np
 
 from dota2_env.actions import CAST_TYPES, MOVE_DISTANCE, N_MOVE_DIRECTIONS, ActionType, build_action_mask
-from dota2_env.bridge.constants import TEAM_DIRE, TEAM_RADIANT, UNIT_TYPE_HERO, UNIT_TYPE_LANE_CREEP, UNIT_TYPE_TOWER
+from dota2_env.bridge.constants import (
+    RUNE_WATER,
+    TEAM_DIRE,
+    TEAM_RADIANT,
+    UNIT_TYPE_HERO,
+    UNIT_TYPE_LANE_CREEP,
+    UNIT_TYPE_TOWER,
+)
 from dota2_env.bridge.protos.dota_gcmessages_common_bot_script_pb2 import CMsgBotWorldState
 from dota2_env.game_text import Language, display_name, item_names
-from dota2_env.map_features import LANDMARKS, MAP_SCALE, RUNE_SPOTS, TreeTable, load_map
+from dota2_env.map_features import (
+    LANDMARKS,
+    MAP_SCALE,
+    RUNE_SPOTS,
+    RUNE_STATUS_AVAILABLE,
+    EventKind,
+    GameMode,
+    TreeTable,
+    load_map,
+    upcoming,
+)
 from dota2_env.observation import (
     N_ABILITIES,
     STASH_SLOTS,
@@ -60,6 +78,19 @@ SPOT_KINDS: dict[str, dict[Language, str]] = {
     'lotus': {'zh': '莲花池', 'en': 'Lotus Pool'},
     'outpost': {'zh': '前哨', 'en': 'Outpost'},
 }
+# Note (ruidu): the world state's rune type is the bot API's RUNE_* value (the bot VM's globals on 6934); the names
+# are the client's DOTA_HUD_Rune_* on 6938. 8 is RUNE_XP, which no longer comes to a rune spot since 7.38.
+RUNE_TYPES: dict[int, dict[Language, str]] = {
+    0: {'zh': '增伤神符', 'en': 'Amplify Damage rune'},
+    1: {'zh': '极速神符', 'en': 'Haste rune'},
+    2: {'zh': '幻象神符', 'en': 'Illusion rune'},
+    3: {'zh': '隐身神符', 'en': 'Invisibility rune'},
+    4: {'zh': '恢复神符', 'en': 'Regeneration rune'},
+    5: {'zh': '赏金神符', 'en': 'Bounty rune'},
+    6: {'zh': '奥术神符', 'en': 'Arcane rune'},
+    7: {'zh': '圣水神符', 'en': 'Water rune'},
+    9: {'zh': '护盾神符', 'en': 'Shield rune'},
+}
 SPOT_GROUPS: dict[str, dict[Language, str]] = {
     'rune spots': {'zh': '神符点', 'en': 'Rune spots'},
     'landmarks': {'zh': '地标', 'en': 'Landmarks'},
@@ -84,10 +115,19 @@ def tower_name(match: re.Match[str], language: Language) -> str:
     return (LANES[lane.replace('bot', 'bottom')][language] if lane else '') + TOWER_TIERS[tier][language]
 
 
-def spot_name(spot: str, language: Language) -> str:
+def spot_name(spot: str, language: Language = 'zh') -> str:
     """The client's name of a RUNE_SPOTS or LANDMARKS entry: power_top is 上路强化神符."""
     kind, side = spot.rsplit('_', 1)
     return LANES[side][language] + SPOT_KINDS[kind][language]
+
+
+def event_name(kind: EventKind, language: Language = 'zh') -> str:
+    """The client's name of what an events.json entry brings: 赏金神符, 圣水神符, 疗伤莲花."""
+    if kind == 'lotus':
+        return display_name('item_famango', language)
+    if kind == 'water':
+        return RUNE_TYPES[RUNE_WATER][language]
+    return SPOT_KINDS[kind][language]
 
 
 def map_reference(language: Language = 'zh') -> list[str]:
@@ -127,6 +167,7 @@ def describe(
     hero_players: set[int] | None = None,
     trees: TreeTable | None = None,
     language: Language = 'zh',
+    mode: GameMode | None = None,
 ) -> str:
     observation = build_observation(world_state, team_id, player_id, hero_players, trees)
     lines = [f'time {clock(world_state.dota_time)}']
@@ -351,6 +392,14 @@ def describe(
                 )
             lines.append(f'{label} towers, outermost standing per lane: ' + ('; '.join(outermost) or 'none'))
         arrays = observation.arrays
+        # Note (ruidu): the type rides on the world state's rune_infos whether or not the team sees the spot,
+        # and can be older than the rune lying there (docs/VERSION_DIFF.md), so it is only a hint.
+        rune_types = {}
+        for rune in world_state.rune_infos:
+            at = (rune.location.x, rune.location.y)
+            nearest = min(range(len(RUNE_SPOTS)), key=lambda index: math.dist(static.runes[index], at))
+            if rune.status == RUNE_STATUS_AVAILABLE and rune.type in RUNE_TYPES:
+                rune_types[RUNE_SPOTS[nearest]] = RUNE_TYPES[rune.type][language]
         for group, spots, rows in (
             ('rune spots', RUNE_SPOTS, arrays['runes']),
             ('landmarks', LANDMARKS, arrays['landmarks']),
@@ -361,11 +410,27 @@ def describe(
                 if group == 'rune spots':
                     words.insert(0, f'[{index}]')  # the rune PICKUP_RUNE takes
                 if spot.startswith(('power', 'bounty')) and flag:
-                    words.append('available')
+                    words += ['available', rune_types[spot]] if spot in rune_types else ['available']
                 elif spot.startswith('outpost'):
                     words.append('ours' if flag else 'enemy')
                 named.append(' '.join(words))
             lines.append(f'{group}: ' + '; '.join(named))
+        if mode is not None:
+            # Note (ruidu): every place in full, with the at (x, y) MOVE takes, rather than the rows of the two lines
+            # above, which made the model look each one up.
+            spots = dict(zip(RUNE_SPOTS + LANDMARKS, [*static.runes, *static.landmarks], strict=True))
+            coming = []
+            for time, event in upcoming(mode, world_state.dota_time):
+                places = [
+                    f'{spot_name(spot, language)} at ({spots[spot][0]:.0f}, {spots[spot][1]:.0f}) '
+                    f'dist {math.dist((x, y), spots[spot]):.0f}'
+                    for spot in event.spots
+                ]
+                coming.append(
+                    f'  {clock(time)} in {clock(time - world_state.dota_time)} {event_name(event.kind, language)}: '
+                    + (' or ' if event.one_of else ', ').join(places)
+                )
+            lines += ['upcoming:', *coming] if coming else ['upcoming: none']
 
     # MOVE_TO is legal exactly when MOVE is; a model names it by giving MOVE a point
     legal = [t.name for t in ActionType if mask['type'][t] and t != ActionType.MOVE_TO]
@@ -380,6 +445,7 @@ def hero_blocks(
     cast_slots: dict[int, dict[int, tuple[str, tuple[str, ...]]]] | None = None,
     trees: TreeTable | None = None,
     language: Language = 'zh',
+    mode: GameMode | None = None,
 ) -> list[str]:
     """One describe() block per controlled hero, in team observation row order.
 
@@ -388,7 +454,7 @@ def hero_blocks(
     hero_players = {player.player_id for player in world_state.players}
     slots = cast_slots or {}
     return [
-        describe(world_state, team_id, player_id, slots.get(player_id), hero_players, trees, language)
+        describe(world_state, team_id, player_id, slots.get(player_id), hero_players, trees, language, mode)
         for player_id in player_ids
     ]
 
@@ -401,7 +467,7 @@ def describe_team(
     trees: TreeTable | None = None,
 ) -> str:
     """One describe() block per controlled hero, numbered the way the team observation rows are."""
-    blocks = hero_blocks(world_state, team_id, player_ids, cast_slots, trees)
+    blocks = hero_blocks(world_state, team_id, player_ids, cast_slots, trees, mode='allpick5v5')
     return '\n\n'.join(
         f'=== hero {row} (player {player_id}) ===\n{block}'
         for row, (player_id, block) in enumerate(zip(player_ids, blocks, strict=True))

@@ -1,6 +1,7 @@
 import json
 import os
 import re
+from typing import get_args
 
 import numpy as np
 import pytest
@@ -14,9 +15,13 @@ from dota2_env.map_features import (
     MAP_RADIUS,
     RUNE_FEATURES,
     RUNE_SPOTS,
+    GameMode,
+    MapEvent,
     TreeTable,
+    load_events,
     load_map,
     map_arrays,
+    upcoming,
 )
 
 
@@ -71,6 +76,28 @@ def test_local_map_is_centred_on_the_hero_and_blocked_past_the_map_edge():
     assert corner[MAP_FEATURES.index('blocked'), :MAP_RADIUS].all()  # the rows south of the map
 
 
-@pytest.mark.parametrize('name', ['map.json', 'items.json', 'abilities.json', 'heroes.json'])
+@pytest.mark.parametrize('name', ['map.json', 'items.json', 'abilities.json', 'heroes.json', 'events.json'])
 def test_data_files_name_their_patch(name):
     assert re.fullmatch(r'7\.\d+[a-z]?', data_file(name)['patch'])
+
+
+def test_an_event_comes_at_its_listed_times_or_every_interval_from_its_first():
+    bounty = MapEvent(kind='bounty', spots=('bounty_top', 'bounty_bottom'), first=240, every=240)
+    assert [bounty.next_time(t) for t in (-90.0, 0.0, 239.9, 240.0, 250.0)] == [240, 240, 240, 480, 480]
+    water = MapEvent(kind='water', spots=('power_top', 'power_bottom'), times=(120, 240))
+    assert [water.next_time(t) for t in (0.0, 120.0, 239.9, 240.0)] == [120, 240, 240, None]
+
+
+@pytest.mark.parametrize('mode', get_args(GameMode))
+def test_every_kind_comes_next_once_soonest_first_to_spots_of_its_own(mode):
+    for event in load_events(mode):
+        runes = event.kind in ('bounty', 'water', 'power')
+        own = RUNE_SPOTS if runes else tuple(spot for spot in LANDMARKS if spot.startswith(event.kind))
+        assert event.spots and set(event.spots) <= set(own), event
+        # listed times or a first time and an interval, never both
+        assert (event.first is None, event.every is None) == ((True, True) if event.times else (False, False)), event
+    for dota_time in (-90.0, 0.0, 120.0, 419.5, 1000.0):
+        coming = upcoming(mode, dota_time)
+        times, kinds = [time for time, _ in coming], [event.kind for _, event in coming]
+        assert times == sorted(times) and all(time > dota_time for time in times)
+        assert len(kinds) == len(set(kinds))

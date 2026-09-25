@@ -132,7 +132,9 @@ def main():
     env, agent_team = make_env(match, 'human' if args.render or match.render else None)
     rows = len(agent_team.agents)
 
-    with open(log_path, 'w') as transcript:
+    # Note (ruidu): line buffered, so every record is on disk as it is written and scripts/prompt_debugger.py can
+    # follow a match while it runs.
+    with open(log_path, 'w', buffering=1) as transcript:
         runner = TeamRunner(match, agent_team, gateways, transcript)
         start = time.time()
         step = 0

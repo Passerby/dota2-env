@@ -190,7 +190,9 @@ class DotaMid1v1Env(gym.Env):
 
     def render(self):
         if self.render_mode == 'ansi' and self._world_state is not None:
-            return describe(self._world_state, self.team_id, self._player_id, self.cast_slots(), trees=self.trees)
+            return describe(
+                self._world_state, self.team_id, self._player_id, self.cast_slots(), trees=self.trees, mode='mid1v1'
+            )
         return None
 
     def close(self):

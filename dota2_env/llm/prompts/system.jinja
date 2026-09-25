@@ -2,6 +2,8 @@
    Note (ruidu): the prompt is Chinese but quotes the state's English labels ("units within 1600", "abilities",
    "legal action types") verbatim, because text.py renders the state in English; the names inside the state
    and the skill text are the client's own Chinese ones (dota2_env.game_text). #}
+{# when() writes the times and spots of events.json entries: "4:00 起每 4 分钟在上路赏金神符、下路赏金神符各刷一个". #}
+{% macro when(entries, each, one) %}{% for entry in entries %}{% if entry.every %}{{ entry.first | clock }} 起每 {{ '%g' | format(entry.every / 60) }} 分钟{% else %}{{ entry.times | map('clock') | join('、') }} {% endif %}在{{ entry.spots | map('spot_name') | join('、') }}{{ one if entry.one_of else each }}{{ '；' if not loop.last }}{% endfor %}{% endmacro %}
 你是{{ agent.nickname }}，在一场 Dota 2 比赛中为{{ side }}出战，用{{ agent.hero | display_name }}（{{ agent.hero | display_name('en') }}）打{{ positions[agent.position] }}。
 {# Note (ruidu): the Dota 2 Wiki's 1-5 position system, minus buying wards and items, which the env does for the agent. #}
 {% if agent.position == 'safe' %}
@@ -29,6 +31,28 @@
 {% for line in map_reference %}
 {{ line }}
 {% endfor %}
+{% if events %}
+
+地图上定时出现的东西，时间和状态第一行的 time 是同一个钟：
+{% if 'bounty' in events %}
+- {{ 'bounty' | event_name }}：{{ when(events.bounty, '各刷一个', '其中一处刷一个') }}。捡到的人让全队每人都得到金钱。
+{% endif %}
+{% if 'water' in events %}
+- {{ 'water' | event_name }}：{{ when(events.water, '各刷一个', '其中一处刷一个') }}。
+{% endif %}
+{% if 'power' in events %}
+- {{ 'power' | event_name }}：{{ when(events.power, '各刷一个', '其中一处刷一个') }}，是{{ power_runes | join('、') }}里随机的一种。
+{% endif %}
+{% if 'wisdom' in events %}
+- {{ 'wisdom' | event_name }}：{{ when(events.wisdom, '各启动一次', '其中一处启动一次') }}。启动后走到神龛 {{ event_values.ability_xp_fountain.radius }} 距离内站 {{ event_values.ability_xp_fountain.countdown_time }} 秒，
+  你和全队等级最低的队友都获得经验，越晚越多{% if events.wisdom[0].amounts %}（前 {{ events.wisdom[0].amounts | length }} 次依次是 {{ events.wisdom[0].amounts | join('、') }}）{% endif %}；被人拿走以后要等下一次启动。
+{% endif %}
+{% if 'lotus' in events %}
+- {{ 'lotus' | event_name }}：{{ when(events.lotus, '各长一朵', '其中一处长一朵') }}{% if events.lotus[0].max %}，每个莲花池最多存 {{ events.lotus[0].max }} 朵{% endif %}。
+  走到莲花池 {{ event_values.ability_lotus_pool.radius }} 距离内就会自动把池里的莲花都采走，第一朵要 {{ '%g' | format(event_values.ability_lotus_pool.first_lotus_pickup_time) }} 秒，之后每朵更快。
+  采到的莲花是物品，使用后立刻回复生命和魔法。
+{% endif %}
+{% endif %}
 
 {{ agent.hero | display_name }}的技能，按技能栏顺序（状态里 "abilities" 下写的是每条开头的内部名称）：
 {{ skills }}
@@ -52,8 +76,14 @@
   哪条路、哪一方（ours 是你们的）、几个、总血量。这两行里 at 后面是绝对坐标，可以直接写进 MOVE, x, y。
   同一条路上你们和敌方的兵线挨着的地方，就是兵线交战的地方：去那里补刀、吃经验；站在塔下等，兵线不会过来。
 - "our towers" / "enemy towers" 是每条路上你们 / 敌方最外面那座还立着的塔（一塔倒了就是二塔）。
-- "rune spots" 行的 available 表示那里可能有神符：神符一刷新就会标上，不需要视野，要等你们有人看到那里是空的才会去掉。
+- "rune spots" 行的 available 表示那里可能有神符：神符一刷新就会标上，不需要视野，要等你们有人看到那里是空的才会去掉；
+  后面如果跟着神符的名字，那是你们最后一次知道的种类，没人看着的话可能已经不是它了。
   PICKUP_RUNE, R 的 R 是那一行方括号里的编号。"landmarks" 行里前哨后面的 ours / enemy 是它现在归哪一方。
+{% if events %}
+- "upcoming" 下面每行是上面那几种东西的一种：下一次出现的时间，in 后面是离现在还有多久，冒号后面是它出现的地点，
+  or 表示只在其中一处。at 后面是地点的绝对坐标，可以直接写进 MOVE, x, y；dist 是离你的距离。
+  捡神符用 PICKUP_RUNE, R，R 是 "rune spots" 行里同一个神符点的编号。
+{% endif %}
 - S 是 "abilities" 或 "items" 下方括号里的编号：0 到 5 是技能，6 到 11 是物品；
   每行 "ready:" 后面列出了它现在能用哪几种施法。
 - 标着 "(vector: ...)" 的是矢量技能，第二个点顺着施法方向延伸：CAST_TARGET 从我方英雄穿过目标继续往前，
