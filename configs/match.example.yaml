@@ -3,7 +3,8 @@
 #
 # ${VAR} is replaced with that environment variable; examples/llm_match.py first loads .env from the
 # repo root, so the usual place for keys is there (cp .env.example .env). A literal key works too, which
-# is why configs/*.yaml is gitignored and only this example is tracked - do not put a real key in this file.
+# is why configs/*.yaml is gitignored and only the *.example.yaml files are tracked - do not put a real
+# key in this file.
 #
 # Every gateway must speak the OpenAI chat API: POST {base_url}/chat/completions.
 # Check base_url and model against your provider's own docs; the ones below are placeholders.

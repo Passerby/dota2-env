@@ -517,6 +517,12 @@ token（改动前一局 744），输出 105（改动前 81）。所以输入大�
 设计草案和流程图在 [LLM_AGENT_DESIGN.md](LLM_AGENT_DESIGN.md)，这一节写已经做出来的第一版。都只在假会话
 （`tests/fake_session.py`）上测过，还没上真客户端跑。
 
+现成的配置是 [configs/deepseek_think.example.yaml](../configs/deepseek_think.example.yaml)：全用 DeepSeek，五个英雄都有
+长思考。长思考开着思考（`thinking: {type: enabled}`），`max_tokens` 32768、超时 180 秒，因为思考也算在 `max_tokens` 里，
+没想完就被截断的回复一行也没有；每秒通道关着思考，`max_tokens` 1024。`timescale: 1`，游戏不加速，一个游戏分钟就是一个
+墙钟分钟，长思考在下一次到点前有整整一分钟可用。`--steps` 要给够：一步一帧，每游戏秒 5 帧，第一帧在 -1:30 左右，
+默认的 3000 步停在 8:30 前后，跑满 10 分钟要 3,450 步以上。两个 `model` 照 DeepSeek 的文档填，可以是同一个。
+
 ### 11.1 两个通道
 
 - 每个 agent 有一个每秒通道（前面十节说的那个）；配置里写了 `think` 的，再有一个**长思考**通道。两个通道各跑在自己的

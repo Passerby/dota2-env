@@ -17,7 +17,16 @@ from dota2_env.bridge.constants import TEAM_DIRE, TEAM_RADIANT
 from dota2_env.bridge.protos.dota_gcmessages_common_bot_script_pb2 import CMsgBotWorldState
 from dota2_env.game_text import item_text
 from dota2_env.llm import agent
-from dota2_env.llm.config import MODES, POSITIONS, AgentConfig, GatewayConfig, MatchConfig, TeamConfig, load_match
+from dota2_env.llm.config import (
+    MODES,
+    POSITIONS,
+    RE_ENV,
+    AgentConfig,
+    GatewayConfig,
+    MatchConfig,
+    TeamConfig,
+    load_match,
+)
 from dota2_env.llm.gateway import Reply
 from dota2_env.llm.runner import TeamRunner
 from dota2_env.map_features import RUNE_SPOTS
@@ -676,6 +685,16 @@ def test_an_unknown_position_is_rejected(tmp_path, monkeypatch):
     positions = ['mid', 'safe', 'jungle', 'support', 'support']
     with pytest.raises(ValueError, match='position must be one of'):
         load_match(write_config(tmp_path, positions=positions))
+
+
+def test_the_example_configs_load(monkeypatch):
+    """The examples are what people copy, so they have to keep up with the loader."""
+    paths = sorted((Path(__file__).parents[1] / 'configs').glob('*.example.yaml'))
+    assert paths
+    for path in paths:
+        for name in RE_ENV.findall(path.read_text(encoding='utf-8')):
+            monkeypatch.setenv(name, 'k')
+        load_match(str(path))
 
 
 # -- plans ------------------------------------------------------------------------------------------

@@ -6,7 +6,7 @@ replays/
 uv.lock
 .DS_Store
 configs/*.yaml
-!configs/match.example.yaml
+!configs/*.example.yaml
 logs/
 memory/
 .env

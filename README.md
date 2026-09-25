@@ -203,7 +203,8 @@ python examples/llm_match.py --config configs/match.example.yaml --dry-run
 莲花池什么时候在哪出现（实测的时间表，`data/events.json`）；user 里有身上物品的说明（价格、合成、神秘商店）、地形、
 看得见的敌方英雄和各路兵线（带绝对坐标）、神符点、地标、这几样东西下一次什么时候来，最后是最近几条命令和下发时英雄站的位置。
 `MOVE, x, y` 下的是 `MOVE_TO`，由游戏自己寻路走到那里。每个键的含义、prompt 的组成、节奏语义、token 估算和已知限制见
-[docs/LLM_MATCH.md](docs/LLM_MATCH.md)；配置模板是 [configs/match.example.yaml](configs/match.example.yaml)。
+[docs/LLM_MATCH.md](docs/LLM_MATCH.md)；配置模板是 [configs/match.example.yaml](configs/match.example.yaml)，全用 DeepSeek、
+每个英雄都有长思考、不加速实时跑的是 [configs/deepseek_think.example.yaml](configs/deepseek_think.example.yaml)。
 
 调 prompt 用 `python scripts/prompt_debugger.py --config configs/<配置>.yaml`：浏览器里逐次看模型收到的 prompt、
 回复每行怎么被读的、哪一步被拒了，也能把某一次的 prompt 改了用同一个 gateway 重发几份对比（LLM_MATCH.md §7）。
