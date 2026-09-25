@@ -9,3 +9,4 @@ configs/*.yaml
 !configs/match.example.yaml
 logs/
 .env
+.claude/

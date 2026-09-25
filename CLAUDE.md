@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 Gymnasium environments for Dota 2 (1v1 mid, and 5v5 all pick with the whole team under agent control),
-extracted from `../LastOrder-Dota2`. Read `README.md` for the
+extracted from [LastOrder-Dota2](https://github.com/bilibili/LastOrder-Dota2). Read `README.md` for the
 interface, `docs/FEATURES.md` for every observation / action / reward field, `docs/LLM_MATCH.md` for the
 YAML-configured LLM-vs-LLM harness, `docs/PARAMETERS.md` for every
 launch flag / env parameter / timing constant (keep both in sync when
