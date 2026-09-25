@@ -279,8 +279,10 @@ class TeamRunner:
                     reading.said = said = text
                 elif kind == 'intent' and text and reading.intent is None:
                     reading.intent = text
-                    self.board.intents[row] = (dota_time, text)
-                    self.thinks.remark(row, dota_time, 'intent', text)
+                    # an intent written again is the same one, still standing since it was first written
+                    if self.board.intents[row] is None or self.board.intents[row][1] != text:
+                        self.board.intents[row] = (request.dota_time, text)
+                        self.thinks.remark(row, request.dota_time, 'intent', text)
                 elif kind == 'call' and text:
                     reading.calls.append(text)
                     self.call(row, text, dota_time)

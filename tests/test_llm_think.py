@@ -378,6 +378,19 @@ def test_an_ask_wakes_its_own_long_think(env):
     assert any('操作你英雄的模型请你重新想：计划里的塔已经倒了' in prompt for prompt in prompts_of(thinker, 'A0'))
 
 
+def test_an_intent_written_again_stands_since_it_was_first_written(env):
+    act = FakeGateway(texts=['MOVE, 4\nINTENT, 去中路一塔后面等兵\nREASON, 按计划走'])
+    thinker = FakeGateway(texts=['PLAN, 去中路补兵'])
+    match = thinking_match(interval=0.0, think_interval=0.4)
+    runner = TeamRunner(match, match.radiant, {'fake': act, 'think': thinker})
+    play(env, runner, 8)
+    runner.close()
+    assert '\n你现在的打算（-1:14 起）：去中路一塔后面等兵\n' in prompts_of(act, 'A0')[-1]  # the last turn is at -1:13
+    prompts = prompts_of(thinker, 'A0')
+    assert ''.join(prompts).count('打算：去中路一塔后面等兵') == 1  # told once, when it was written
+    assert all(prompt.count('理由：按计划走') <= 1 for prompt in prompts)  # once in every long think since
+
+
 def test_forget_drops_the_note_it_names_and_a_repeated_note_is_kept_once(env):
     mine = FakeGateway(texts=['PLAN, 一\nNOTE, 甲\nNOTE, 乙\nNOTE, 甲', 'PLAN, 二\nFORGET, 1', 'PLAN, 三'])
     match = thinking_match(think_interval=0.4)
