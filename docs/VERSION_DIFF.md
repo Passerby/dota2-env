@@ -120,6 +120,21 @@ faulting thread 24: HLTVServerAsync
 自己退出。现在 `run_dota` 用 `start_new_session` 起进程、`stop_dota` 对整个进程组发信号并在 `pkill` 后等到没有
 `dota2` 进程为止。
 
+## 1.4 Linux 客户端（Docker，2026-09 实测）
+
+宿主 Ubuntu 26.04（内核 7.0），容器 Ubuntu 24.04，ClientVersion 6941 / buildid 25539253（和 macOS 同一个 build），无界面。
+部署和并行见 [DOCKER.md](DOCKER.md)。
+
+| 项目 | 结果 | 状态 |
+|---|---|---|
+| `dota.sh` | Linux 分支先 `. /etc/os-release`，`VERSION_CODENAME` 不是 `sniper` 就打印 `FATAL: It appears dota.sh was not launched within the Steam for Linux sniper runtime environment` 退出。sniper（Steam Linux Runtime 3.0）只有经 Steam 启动才有，所以环境在 Linux 上直接起 `bin/linuxsteamrt64/dota2`，补上 `dota.sh` 会设的 `LD_LIBRARY_PATH=<game>/bin/linuxsteamrt64`、`ENABLE_PATHMATCH=1`（散装文件按大小写不敏感查找）和工作目录 `<game>`（`DotaGame.run_dota`）。`dota.sh` 其余的设置（`__GL_THREADED_OPTIMIZATIONS`、`SDL_VIDEO_DRIVER=x11`、退出码 42 就重启）只和窗口、客户端自更新有关 | ✅ |
+| 系统库 | 普通 Ubuntu 24.04 缺 libX11、libdrm、libva、libvdpau（自带的 ffmpeg 要）和 libharfbuzz、libfribidi、libglib-2.0、libthai（自带的 pango 要），装上就能跑；其余都在 `bin/linuxsteamrt64` 里 | ✅ |
+| 打开文件数 | `dota.sh` 里有 `ulimit -n 2048`，容器默认软上限 1024；客户端自己把软上限提到 4096，一局 1v1 开着 277 个 | ✅ |
+| 通信层 | `bots` 软链接、worldstate socket、动作文件、console.log 回执、服务器 VM 的 cfg 原样可用：1500 步 20.0 steps/s，回执里的动作延迟 0.1 游戏秒，和 macOS 一样 | ✅ |
+| Steam 客户端 | 无界面不需要 Steam 在跑（macOS 上要）；镜像里只有 SteamCMD | ✅ |
+| 匿名 SteamCMD | 只拿到 718M 的可执行文件 depot，内容 depot 报 missing license，要一个账号（DOCKER.md 第 1 节） | ✅ |
+| 并行 | 每个容器一层 overlay，4 个同时跑都是 20.0 steps/s | ✅ |
+
 ## 2. Protobuf（`CMsgBotWorldState`）
 
 来源：SteamDatabase/Protobufs `dota2/dota_gcmessages_common_bot_script.proto`。
@@ -370,7 +385,8 @@ OrderType / TargetIndex / AbilityIndex / Position / Queue`（二进制里的键�
    （`local_map` / `runes` / `landmarks`）。`tree_events` 跟着本队视野走（迷雾里的变化再次看到时带 `delayed` 补报），
    种树枝不产生事件（见 MAP_DATA.md 4.5）。后续：发芽的事件、前哨被占领后 `team_id` 是否跟着变还没验证。
 4. 验证 `HOST_MODE_GUI_MENU`（人类自建房间对战）流程在新版大厅 UI 下是否还能把 bot 脚本指到本地 `bots`。
-5. `host_timescale` 4× 以上的上限；多实例并行（端口、`pkill`、`bots` 软链接目前都是全局的）。
+5. `host_timescale` 4× 以上的上限。多实例并行在 Docker 里解决了：一个容器一个实例，4 个并行实测过
+   （[DOCKER.md](DOCKER.md) 第 5 节）；不用容器时同一台机器还是只能跑一个（端口、`pkill`、`bots` 软链接都是全局的）。
 6. 查清死亡后金钱暴涨的原因。
 7. 观测里还没有：modifier、投射物、肉山 / 魔方当前在哪；动作里还没有：对队友施法、信使。矢量施法的第二个点
    实测给不了（3.1），要再试就换新思路，别重复表里已经试过的。
