@@ -13,8 +13,11 @@ changing `launch_args`, `config_auto`, the `*_FEATURES` tuples or an env's `__in
 server VM (the custom-game VScript VM) can do in a normal match - chat, game events, scenario setup, pause - and
 how to dump its full API for the installed client (`scripts/probe_server_vm.py --dump-api`), and
 `docs/REFERENCES.md` for related work (who else has LLMs play real-time games - Brood War Bench is the closest -
-and how this harness differs; surveyed 2026-09-23), and `docs/LLM_AGENT_DESIGN.md` for the flowcharts of the layered
-agent (long think, blackboard, memory across matches), a draft whose first version `docs/LLM_MATCH.md` §11 describes.
+and how this harness differs; surveyed 2026-09-23), `docs/LLM_AGENT_DESIGN.md` for the flowcharts of the layered
+agent (long think, blackboard, memory across matches), a draft whose first version `docs/LLM_MATCH.md` §11 describes,
+and `docs/DOCKER.md` for the Linux runtime image (no Dota inside: the install lives on the host and is mounted;
+SteamCMD needs a Steam account because the anonymous one only gets the binaries; parallel instances are one
+container each, each with its own overlay of the install).
 `AGENTS.md` is the coding style contract - read it before writing Python here, and run its
 review checklist over your own diff.
 
@@ -33,9 +36,12 @@ uv pip install -e ".[dev]"
 .venv/bin/python -u scripts/probe_trees.py                       # map.json tree ids == tree_events ids, real Dota
 .venv/bin/python -u scripts/probe_events.py --patch 7.41f        # events.json: rune / shrine / lotus times, real Dota, ~12 min
 .venv/bin/python -u scripts/probe_server_vm.py                   # server VM: chat, events, scenario, pause; --dump-api PATH
+docker build -t dota2-env --build-arg UID=$(id -u) --build-arg GID=$(id -g) .   # Linux runtime, mirrors in docs/DOCKER.md
+docker run --rm --init -v $DOTA:/opt/dota2 dota2-env python -u examples/scripted_agent.py   # $DOTA: the mounted install
 ```
 
-- Real-Dota runs need Steam running. Prefer headless (`render_mode=None`, `-dedicated`); only one instance at a time.
+- Real-Dota runs need Steam running on macOS (not in the Linux image). Prefer headless (`render_mode=None`,
+  `-dedicated`); only one instance at a time per machine, or one per container.
 - Scripts that create the env must live in a file with an `if __name__ == '__main__':` guard: the worldstate
   listener is a `multiprocessing` child and macOS uses spawn (running from stdin / `python -c` fails).
 - A crashed run can leave `<dota>/game/dota/scripts/vscripts/bots` symlinked, `<dota>/game/dota/cfg/dota2_env_server.cfg`
@@ -82,7 +88,9 @@ uv pip install -e ".[dev]"
   `CanAbilityBeUpgraded` says yes to every talent from level 10 on and then silently refuses; the automatic skill
   points (`actions.upkeep`) keep one back per open tier, through the `keep` of `DOTA_UNIT_ORDER_TRAIN_ABILITY`.
 - Client quirks the env works around (hidden hero after respawn, feed stops at match end) are documented in
-  `docs/VERSION_DIFF.md`; re-verify them with a real run before removing the workarounds.
+  `docs/VERSION_DIFF.md`; re-verify them with a real run before removing the workarounds. One of them: the Linux
+  `dota.sh` exits outside Valve's sniper runtime, so on Linux `DotaGame` starts `bin/linuxsteamrt64/dota2` itself and
+  sets what `dota.sh` would (`LD_LIBRARY_PATH`, `ENABLE_PATHMATCH`, the working directory; `docs/VERSION_DIFF.md` 1.4).
 - `dota2_env/llm/` is the LLM match harness and is deliberately not re-exported from `dota2_env/__init__.py`:
   it needs the optional `[llm]` extra (pyyaml, httpx, jinja2) and the environments must stay installable without it.
   It reaches the envs only through plain data (world states, per-hero masks, player ids), which is what will

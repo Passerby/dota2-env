@@ -67,6 +67,22 @@ def test_stop_dota_takes_the_launcher_and_its_child_down_together(game, monkeypa
         os.killpg(group, 0)
 
 
+def test_linux_starts_the_binary_with_what_dota_sh_would_set_up(game, monkeypatch):
+    # the Linux dota.sh refuses to run outside Valve's sniper runtime
+    launched = {}
+    monkeypatch.setattr('dota2_env.bridge.game.platform', 'linux')
+    monkeypatch.setattr(
+        'dota2_env.bridge.game.subprocess.Popen', lambda args, **kwargs: launched.update(kwargs, args=args)
+    )
+    monkeypatch.setattr(game, 'stop_dota_pids', lambda: None)
+    game.run_dota()
+    library_path = os.path.join(game.dota_path, 'bin', 'linuxsteamrt64')
+    assert launched['args'][0] == os.path.join(library_path, 'dota2')
+    assert launched['cwd'] == game.dota_path
+    assert launched['env']['LD_LIBRARY_PATH'] == library_path
+    assert launched['env']['ENABLE_PATHMATCH'] == '1'
+
+
 def test_action_file_escaping_roundtrip(game):
     data = {'dotaTime': 1.5, 'actions': [{'actionType': 'ACTION_CHAT', 'chat': {'message': 'it\'s a "test" \\ ok'}}]}
     game.write_action(data, TEAM_RADIANT)

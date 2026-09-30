@@ -1,0 +1,13 @@
+.git
+.venv
+.env
+.claude
+.pytest_cache
+.ruff_cache
+**/__pycache__
+**/.DS_Store
+logs
+replays
+probe_out
+configs/*.yaml
+!configs/match.example.yaml

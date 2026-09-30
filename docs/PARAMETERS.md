@@ -6,6 +6,11 @@
 
 ## 1. Dota 启动参数（`bridge/game.py: DotaGame.launch_args`）
 
+第一项是可执行文件（`DotaGame._executable`）：macOS 是 `dota.sh`，Windows 是 `bin/win64/dota2.exe`，Linux 是
+`bin/linuxsteamrt64/dota2`。Linux 的 `dota.sh` 不在 Valve 的 sniper runtime 里就拒绝启动，所以 `run_dota` 直接起二进制，
+补上 `dota.sh` 本来会设的 `LD_LIBRARY_PATH=<game>/bin/linuxsteamrt64`、`ENABLE_PATHMATCH=1`（散装文件按大小写不敏感查找，
+`bots` 目录就是散装的）和工作目录 `<game>` ✅（[VERSION_DIFF.md](VERSION_DIFF.md) 1.4）。
+
 ### 观测与日志
 
 | 参数 | 值 | 作用 | 验证 |
@@ -65,13 +70,13 @@
 | 项 | 值 | 说明 |
 |---|---|---|
 | worldstate 端口 | 12120（天辉）/ 12121（夜魇） | `DotaGame.PORT_WORLDSTATES`。每个端口**只接受一个连接** ✅；端口固定是"一台机器只能跑一个实例"的原因之一 |
-| `DOTA_GAME_PATH` | 环境变量 | 指到 `.../dota 2 beta/game`；不设则用各平台 Steam 默认路径（`DEFAULT_GAME_PATHS`），也可传 `dota_path=` |
+| `DOTA_GAME_PATH` | 环境变量 | 指到 `.../dota 2 beta/game`；不设则用各平台 Steam 默认路径（`DEFAULT_GAME_PATHS`），也可传 `dota_path=`。Docker 镜像里设成 `/opt/dota2/game`（Dota 挂载在 `/opt/dota2`） |
 | 会话目录 | `$TMPDIR/dota2_env_<game_id>/bots/` | 每次 `reset()` 新建：拷入 Lua、`config_auto.lua`、动作文件、`console.log`。`close()` 时删除，`keep_files=True` 保留 |
 | bots 软链接 | `<dota>/game/dota/scripts/vscripts/bots` → 会话目录 | 已存在真实目录则拒绝运行；残留的旧软链接会被替换；`close()` 时移除。Windows 需要管理员权限 |
 | 服务器 cfg | `<dota>/game/dota/cfg/dota2_env_server.cfg` | 一行 `script_reload_code bots/server_actions`，构造 `DotaGame` 时写入、`close()` 时删除（`remove_dota_files`） |
 | 录像目录 | `<dota>/dota/replays/` | 客户端自己写 `.dem` 的地方（属于 Dota 安装目录）。`close()` 把这一局的那个文件 **move** 到 `replay_dir`，不会留在游戏目录里 |
 | `replay_dir` | 由调用方给，相对路径相对当前工作目录 | 例如 `"replays"`；`close()` 之后路径在 `env.unwrapped.replay_path` |
-| 进程 | 启动前 `pkill -x dota2` 并等它退干净 | 会杀掉机器上所有 Dota 进程，然后最多等 15 秒直到没有 `dota2` 进程（否则 SIGKILL）：上一局还在退出时启动新实例，新实例会在启动阶段自己退出。`close()` 只停自己那个进程组（`dota.sh` 壳 + 游戏本体：SIGTERM → 等待 → 超时才 SIGKILL） |
+| 进程 | 启动前 `pkill -x dota2` 并等它退干净 | 会杀掉机器上所有 Dota 进程，然后最多等 15 秒直到没有 `dota2` 进程（否则 SIGKILL）：上一局还在退出时启动新实例，新实例会在启动阶段自己退出。`close()` 只停自己那个进程组（macOS 上是 `dota.sh` 壳 + 游戏本体，Linux 上只有游戏本体：SIGTERM → 等待 → 超时才 SIGKILL）。Docker 里每个容器有自己的进程空间，`pkill` 只杀得到本容器的 Dota（[DOCKER.md](DOCKER.md)） |
 
 ## 3. 传给 Lua 的配置（`bots/config_auto.lua`，由 `DotaGame._write_config` 生成）
 

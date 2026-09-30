@@ -228,9 +228,13 @@ class DotaGame:
                 break
             time.sleep(0.5)
 
-    def _executable(self):
+    def _executable(self) -> str:
         if platform == 'win32':
             return os.path.join(self.dota_path, 'bin', 'win64', 'dota2.exe')
+        if platform.startswith('linux'):
+            # Note (ruidu): the Linux dota.sh exits unless /etc/os-release names Valve's sniper runtime, which only a
+            # launch through Steam provides; run_dota sets up what dota.sh would have (docs/VERSION_DIFF.md 1.4).
+            return os.path.join(self.dota_path, 'bin', 'linuxsteamrt64', 'dota2')
         return os.path.join(self.dota_path, 'dota.sh')
 
     def launch_args(self):
@@ -291,14 +295,26 @@ class DotaGame:
             args.extend(['+tv_enable', '1', '+tv_autorecord', '1'])
         return args
 
-    def run_dota(self):
+    def run_dota(self) -> subprocess.Popen:
         self.stop_dota_pids()
         args = self.launch_args()
         logger.info(' '.join(args))
-        # Note (ruidu): dota.sh is a bash wrapper around the dota2 binary; its own session lets stop_dota
+        if platform.startswith('linux'):
+            # what the Linux dota.sh sets up; ENABLE_PATHMATCH has the engine find loose files, the bots folder
+            # among them, whatever the case of their names
+            library_path = os.path.join(self.dota_path, 'bin', 'linuxsteamrt64')
+            env, cwd = dict(os.environ, LD_LIBRARY_PATH=library_path, ENABLE_PATHMATCH='1'), self.dota_path
+        else:
+            env, cwd = None, None
+        # Note (ruidu): on macOS dota.sh is a bash wrapper around the dota2 binary; its own session lets stop_dota
         # signal the whole group, since a SIGTERM to the wrapper alone leaves the game running.
         self.process = subprocess.Popen(
-            args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=platform != 'win32'
+            args,
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=platform != 'win32',
         )
         return self.process
 
