@@ -4,7 +4,8 @@ Dota 2 的 [Gymnasium](https://gymnasium.farama.org/) 环境：用标准的 `res
 Dota 2 客户端里的英雄——1v1 中路一个，或者 5v5 全阵营一整队。由 [LastOrder-Dota2](https://github.com/bilibili/LastOrder-Dota2)
 的运行环境抽离、重构而来，不含任何模型代码；面向 RL 训练，也面向 LLM agent（自带文本观测 / JSON 动作封装）。
 
-已在 2026-09 的客户端（macOS，无 GUI `-dedicated` 模式）上实测。新旧版本差异见 [docs/VERSION_DIFF.md](docs/VERSION_DIFF.md)。
+已在 2026-09 的客户端上实测：macOS，以及 Linux（Docker，见 [docs/DOCKER.md](docs/DOCKER.md)），都是无 GUI 的 `-dedicated` 模式。
+新旧版本差异见 [docs/VERSION_DIFF.md](docs/VERSION_DIFF.md)。
 
 ```python
 import gymnasium as gym
@@ -35,7 +36,9 @@ python examples/llm_match.py --config configs/match.example.yaml --dry-run   # L
 - 游戏路径默认取各平台 Steam 默认位置，可用环境变量 `DOTA_GAME_PATH` 覆盖（指到 `.../dota 2 beta/game`）。
 - 运行时会把 `<dota>/game/dota/scripts/vscripts/bots` 软链接到临时会话目录，`close()` 时移除；
   如果那里已有真实的 `bots` 目录会拒绝运行。Windows 上创建软链接需要管理员权限。
-- 同一台机器同一时间只能跑一个环境实例（端口固定，启动前会 `pkill dota2`）。
+- 同一台机器同一时间只能跑一个环境实例（端口固定，启动前会 `pkill dota2`）。要并行就用 Docker，一个容器一个实例。
+- Linux 服务器上用 Docker：镜像只含系统库、SteamCMD 和 Python 环境，Dota 装在宿主机上挂进容器；下载内容要一个
+  Steam 账号（匿名账号只拿得到可执行文件）。见 [docs/DOCKER.md](docs/DOCKER.md)。
 
 ## 环境 `dota2_env/Mid1v1-v0`
 
