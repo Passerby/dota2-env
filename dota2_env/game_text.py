@@ -77,6 +77,12 @@ def item_names() -> dict[int, str]:
     return {record['id']: name for name, record in load_records('items').items()}
 
 
+@functools.cache
+def hero_names() -> dict[int, str]:
+    """{hero id: unit name} of heroes.json: a world state's players carry the hero id only."""
+    return {record['id']: name for name, record in load_records('heroes').items()}
+
+
 def numbers_text(numbers: list[float]) -> str:
     """'60 / 80 / 100', or a single number when every level has the same value."""
     return ' / '.join(f'{number:g}' for number in (numbers if len(set(numbers)) > 1 else numbers[:1]))

@@ -1,0 +1,59 @@
+{# The per-second user message, rendered every turn (agent.act_user_prompt). The item notes open it because they
+   only change with the inventory, and the long think's plan follows because it changes about once a minute, so a
+   gateway's prefix cache still covers both; state is the hero's text.describe(), and history the agent's last
+   commands (agent.Note), oldest first. What changes every turn about the plan, its progress, goes after the state. #}
+{% if items %}
+你身上的物品：
+{% for item in items %}
+{{ item }}
+{% endfor %}
+
+{% endif %}
+{% if directive %}
+你的计划（{{ directive.decided_at | clock }} 定）：{{ directive.plan }}
+{% if directive.goal %}
+  目标点 ({{ '%.0f' | format(directive.goal[0]) }}, {{ '%.0f' | format(directive.goal[1]) }})
+{% endif %}
+
+{% endif %}
+{{ state }}
+{% if directive %}
+计划进度：定下已经 {{ (dota_time - directive.decided_at) | clock }}{{ '，离目标点 %.0f' | format(goal_distance) if goal_distance is not none else '' }}
+{% endif %}
+{% if teammates %}
+
+你的队友：
+{% for mate, hero, intent in teammates %}
+{% if hero is none %}
+  {{ mate.nickname }} {{ positions[mate.position] }} 状态未上报{{ ' 打算：' ~ intent[1] if intent else '' }}
+{% else %}
+  {{ mate.nickname }} {{ positions[mate.position] }} {{ hero.name | display_name }} lvl {{ hero.level }} hp {{ '%.0f' | format(100 * hero.health / hero.health_max) }}% 位于 ({{ '%.0f' | format(hero.location.x) }}, {{ '%.0f' | format(hero.location.y) }}) lh/dn {{ hero.last_hits }}/{{ hero.denies }}{{ ' 打算：' ~ intent[1] if intent else '' }}
+{% endif %}
+{% endfor %}
+{% endif %}
+{% if calls %}
+
+队友的呼叫：
+{% for caller, call in calls %}
+  {{ call.dota_time | clock }} {{ caller }}{{ '（对你）' if call.target is not none else '' }}：{{ call.text }}
+{% endfor %}
+{% endif %}
+
+{% if intent %}
+你现在的打算（{{ intent[0] | clock }} 起）：{{ intent[1] }}
+
+{% endif %}
+{% if history %}
+你最近的命令，旧的在前，括号里是命令下发时你站的位置：
+{% for note in history %}
+{% if note.kind == 'undelivered' %}
+  {{ note.dota_time | clock }} 你的回复没能送达：{{ note.error }}
+{% elif note.kind == 'unusable' %}
+  {{ note.dota_time | clock }} 你的回复无法使用：{{ note.error }}
+{% else %}
+  {{ note.dota_time | clock }}{% if note.position %} ({{ '%.0f' | format(note.position[0]) }}, {{ '%.0f' | format(note.position[1]) }}){% endif %} {{ note.step }} {{ '已经下达' if note.kind == 'issued' else '被拒绝了：' ~ note.error }}
+{% endif %}
+{% endfor %}
+{% else %}
+你还没有下过命令
+{% endif %}

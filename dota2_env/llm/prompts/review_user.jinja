@@ -1,0 +1,35 @@
+{# The post-match review's user message (think.review_user_prompt): the result, the hero's plans in order, everything
+   the team's world state showed happening, and the lessons it already has. #}
+{% from 'partials/event.jinja' import event_text with context %}
+结果：{{ {'won': '你们赢了', 'lost': '你们输了'}.get(result, '没有分出胜负（到了时间上限，或者被中途停下）') }}，比赛打到 {{ now | clock }}。
+{% if player %}
+你最后：K/D/A {{ player.kills }}/{{ player.deaths }}/{{ player.assists }}{{ '，lvl %d，lh/dn %d/%d' | format(hero.level, hero.last_hits, hero.denies) if hero else '' }}
+{% endif %}
+
+你的每一版计划，旧的在前：
+{% for directive in plans %}
+  {{ directive.decided_at | clock }} {{ directive.plan }}{{ '（目标点 (%.0f, %.0f)）' | format(directive.goal[0], directive.goal[1]) if directive.goal else '' }}
+{% else %}
+  一版都没有
+{% endfor %}
+
+整局发生的事：
+{% for event in events %}
+  {{ event.dota_time | clock }} {{ event_text(event) }}
+{% else %}
+  没什么事
+{% endfor %}
+{% if memos %}
+
+你最后的笔记：
+{% for memo in memos %}
+  {{ memo.dota_time | clock }} {{ memo.text }}
+{% endfor %}
+{% endif %}
+{% if lessons %}
+
+你已经有的经验：
+{% for lesson in lessons %}
+- {{ lesson.kind }}：{{ lesson.text }}
+{% endfor %}
+{% endif %}

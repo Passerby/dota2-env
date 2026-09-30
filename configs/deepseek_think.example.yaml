@@ -1,0 +1,71 @@
+# One LLM match in real time, every hero with a long think, all on DeepSeek. Copy this file, fill in the two
+# model ids, and run:
+#   cp configs/deepseek_think.example.yaml configs/deepseek_think.yaml
+#   python examples/llm_match.py --config configs/deepseek_think.yaml --dry-run
+#   python examples/llm_match.py --config configs/deepseek_think.yaml --steps 4000          # add --render to watch
+#
+# --steps counts frames, 5 a game second here, and the first one comes at about -1:30: the default 3000 would stop
+# the match near 8:30, 4000 leaves it to max_dota_time. The key is DEEPSEEK_API_KEY, read from .env like the
+# others (cp .env.example .env) - do not put a real key in this file, it is tracked. match.example.yaml explains
+# every key; this file only differs where a comment says why.
+
+gateways:
+  # The per-second channel does not think: it has about a game second per reply.
+  deepseek:
+    base_url: https://api.deepseek.com/v1
+    api_key: ${DEEPSEEK_API_KEY}
+    model: FILL_ME              # the chat model your 1 Hz config already uses
+    price_per_mtok: {input: 0.0, output: 0.0}   # left at zero, spend_limit_usd never stops anything
+    timeout_seconds: 8.0
+    # A reply is its action lines, perhaps an INTENT or a CALL, and a REASON of up to 200 characters: a few hundred
+    # tokens at most, so 1024 only keeps a long REASON from being cut off. Lines still go out as they arrive.
+    params: {temperature: 0.3, max_tokens: 1024, thinking: {type: disabled}}
+
+  # The long think thinks before it answers. max_tokens counts the thinking too, and a reply cut off while it is
+  # still thinking has not one line in it, so the cap is far above what a plan needs; lower it only if the gateway
+  # answers that it is past the model's limit. timeout_seconds is for the whole reply: in real time a think that
+  # has not finished in three minutes would bring a plan three game minutes old.
+  deepseek_think:
+    base_url: https://api.deepseek.com/v1
+    api_key: ${DEEPSEEK_API_KEY}
+    model: FILL_ME              # the same chat model will do: the switch below turns its thinking on
+    price_per_mtok: {input: 0.0, output: 0.0}
+    timeout_seconds: 180.0
+    params: {max_tokens: 32768, thinking: {type: enabled}}
+
+match:
+  mode: allpick5v5
+  timescale: 1.0            # real time: a game minute is a wall minute, all of it the long think's to reply in
+  ticks_per_observation: 6
+  max_dota_time: 600.0      # about 12 wall minutes with the 1:30 before the horn; a full 5v5 is 2400
+  spend_limit_usd: 5.0      # real time asks about twice as often as timescale 4 (docs/LLM_MATCH.md §9), and the
+                            # long thinks come on top
+  log_dir: logs
+  log_prompts: true         # every prompt in the transcript, so the prompt debugger shows what each long think saw
+  all_chat: true
+  show_reason: true
+  share_team_state: true
+  history_length: 6
+  notes_limit: 8
+  call_seconds: 30.0
+  memory_dir: memory
+  lessons_limit: 10
+  render: false
+
+radiant:
+  control: agent
+  agents:
+    - {nickname: Shadow, hero: npc_dota_hero_nevermore,      position: mid,          gateway: deepseek, decision_interval: 1.0, think: &think {gateway: deepseek_think, interval: 60.0}}
+    - {nickname: Bullet, hero: npc_dota_hero_sniper,         position: safe,         gateway: deepseek, decision_interval: 1.0, think: *think}
+    - {nickname: Blaze,  hero: npc_dota_hero_lina,           position: offlane,      gateway: deepseek, decision_interval: 3.0, think: *think}
+    - {nickname: Hex,    hero: npc_dota_hero_lion,           position: support,      gateway: deepseek, decision_interval: 3.0, think: *think}
+    - {nickname: Frost,  hero: npc_dota_hero_crystal_maiden, position: hard_support, gateway: deepseek, decision_interval: 3.0, think: *think}
+
+dire:
+  control: builtin
+  heroes:
+    - npc_dota_hero_axe
+    - npc_dota_hero_juggernaut
+    - npc_dota_hero_zuus
+    - npc_dota_hero_witch_doctor
+    - npc_dota_hero_skywrath_mage

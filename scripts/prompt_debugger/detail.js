@@ -19,8 +19,14 @@ export function decisionView(state, entry) {
 
 function head(entry, meta) {
   const { record, hero } = entry;
-  const info = log.heroInfo(hero, meta);
-  const who = [record.nickname, meta.positions[info.position], log.heroName(meta, info.hero), meta.teams[record.team]];
+  const info = log.heroInfo(hero, meta, entry.channel);
+  const who = [
+    record.nickname,
+    log.CHANNEL_NAMES[entry.channel],
+    meta.positions[info.position],
+    log.heroName(meta, info.hero),
+    meta.teams[record.team],
+  ];
   const when =
     record.decided_at === undefined
       ? `回复完 ${log.clock(record.dota_time, true)}`
@@ -45,6 +51,7 @@ function head(entry, meta) {
       ` · 输入 ${record.input_tokens ?? '—'} / 输出 ${record.output_tokens ?? '—'} token · ${usd(record.usd ?? 0)}`,
     ),
     record.error ? el('div', { class: 'error-line' }, `出错：${record.error}`) : null,
+    (record.problems ?? []).length ? el('div', { class: 'error-line' }, `没用上的行：${record.problems.join('；')}`) : null,
   );
 }
 
@@ -86,16 +93,18 @@ function replyTab(entry, planLength, term) {
     );
   }
   const unmatched = entry.rejected.length - lines.filter((line) => line.rejected).length;
+  const how =
+    entry.channel === 'act'
+      ? '#n 是计划的第 n 步，每帧下发一步；下一份回复的第一步一到，还没轮到的步骤就被换掉了，所以没标被拒的步骤不一定都执行了。'
+      : entry.channel === 'think'
+        ? 'PLAN 一到就是英雄的计划，后面的 GOAL 给它加上目标点；NOTE、FORGET、CALL 也是读到就生效。'
+        : '每条 LESSON 写进 memory_dir 里这个英雄的经验文件，下一局的长思考会读到。';
   return el(
     'div',
     {},
     renderLines(lines, term),
     unmatched > 0 ? el('p', { class: 'error-line' }, `另有 ${unmatched} 条被拒记录对不上回复里的行，见「原始 JSON」。`) : null,
-    el(
-      'p',
-      { class: 'muted small' },
-      '#n 是计划的第 n 步，每帧下发一步；下一份回复的第一步一到，还没轮到的步骤就被换掉了，所以没标被拒的步骤不一定都执行了。',
-    ),
+    el('p', { class: 'muted small' }, how),
   );
 }
 
@@ -140,13 +149,13 @@ function diffTab(entry) {
 }
 
 function systemTab(entry, meta, term) {
-  const info = log.heroInfo(entry.hero, meta);
+  const info = log.heroInfo(entry.hero, meta, entry.channel);
   const box = el('div', {});
   if (info.system !== null) {
     const changes = el('div', {});
     const compare = el('button', { type: 'button', disabled: !info.config }, '和当前模板重建的比');
     compare.addEventListener('click', async () => {
-      const result = await rebuildSystem(entry.hero);
+      const result = await rebuildSystem(entry.hero, entry.channel);
       changes.replaceChildren(
         result.error
           ? el('p', { class: 'error-line' }, `重建失败：${result.error}`)
@@ -162,13 +171,10 @@ function systemTab(entry, meta, term) {
     box.append(el('div', { class: 'toolbar' }, title, compare), changes, promptView(info.system, term));
     return box;
   }
-  if (!info.config) {
-    return el('p', { class: 'muted' }, '这份日志没有记 system prompt（旧日志）。启动时加 --config，就能按当前模板重建一份。');
-  }
-  box.append(
-    el('p', { class: 'muted' }, `日志里没有 system prompt（旧日志），下面按当前模板和 ${meta.config} 重建，可能和当时发出的不同。`),
-  );
-  rebuildSystem(entry.hero).then((result) => {
+  const missing = entry.channel === 'review' ? '复盘的 system prompt 不进日志' : '这份日志没有记 system prompt（旧日志）';
+  if (!info.config) return el('p', { class: 'muted' }, `${missing}。启动时加 --config，就能按当前模板重建一份。`);
+  box.append(el('p', { class: 'muted' }, `${missing}，下面按当前模板和 ${meta.config} 重建，可能和当时发出的不同。`));
+  rebuildSystem(entry.hero, entry.channel).then((result) => {
     box.append(result.error ? el('p', { class: 'error-line' }, `重建失败：${result.error}`) : promptView(result.system, term));
   });
   return box;
@@ -187,6 +193,7 @@ export function overview(index, meta) {
       cell(meta.positions[info.position] ?? ''),
       cell([info.gateway, info.model].filter(Boolean).join(' / ')),
       cell(stats.decisions, 'num'),
+      cell(stats.thinks, 'num'),
       cell(stats.errors, 'num'),
       cell(stats.rejected, 'num'),
       cell(`${stats.inputTokens} / ${stats.outputTokens}`, 'num'),
@@ -196,7 +203,7 @@ export function overview(index, meta) {
       cell(stats.late ? stats.late.median.toFixed(1) : '—', 'num'),
     );
   });
-  const columns = ['昵称', '英雄', '位置', '网关 / 模型', '决策', '出错', '被拒', '输入 / 输出 token', '花费'];
+  const columns = ['昵称', '英雄', '位置', '网关 / 模型', '决策', '长思考', '出错', '被拒', '输入 / 输出 token', '花费'];
   const ranked = (title, texts, status) => {
     const top = log.ranking(texts).slice(0, 12);
     if (!top.length) return null;

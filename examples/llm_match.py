@@ -20,10 +20,12 @@ from dotenv import load_dotenv
 
 import dota2_env  # noqa: F401  (registers the environments)
 from dota2_env.actions import team_action_space
-from dota2_env.llm.agent import system_prompt
+from dota2_env.llm import review
+from dota2_env.llm.agent import act_system_prompt
 from dota2_env.llm.config import Mode, load_match
 from dota2_env.llm.gateway import Gateway
 from dota2_env.llm.runner import TeamRunner
+from dota2_env.llm.think import think_system_prompt
 from dota2_env.observation import team_player_ids
 from dota2_env.rewards import AllPick5v5Rules, Mid1v1Rules
 
@@ -85,6 +87,12 @@ def queue_for_hero(queue: Callable[..., None], mode: Mode, row: int, text: str) 
         queue(text)
 
 
+def tokens(prompt):
+    """About a token per Chinese character and one per 3 characters of the rest; tokenizers differ."""
+    chinese = sum(1 for char in prompt if '\u4e00' <= char <= '\u9fff')
+    return chinese + (len(prompt) - chinese) // 3
+
+
 def dry_run(match):
     """Validate the config and show what every agent would be sent, without Dota and without spending."""
     print(f'mode {match.mode} timescale {match.timescale} ticks/obs {match.ticks_per_observation}')
@@ -98,17 +106,21 @@ def dry_run(match):
     for team in (match.radiant, match.dire):
         print(f'\n--- team {team.team_id} control={team.control} ---')
         for row, config in enumerate(team.agents):
-            prompt = system_prompt(config, match, team.team_id)
-            # Note (ruidu): about a token per Chinese character and one per 3 characters of the rest; tokenizers differ.
-            chinese = sum(1 for char in prompt if '\u4e00' <= char <= '\u9fff')
+            prompt = act_system_prompt(config, match, team.team_id)
             print(
                 f'  [{row}] {config.nickname} {config.hero} {config.position} via {config.gateway} '
-                f'every {config.decision_interval}s  system prompt {len(prompt)} chars '
-                f'(~{chinese + (len(prompt) - chinese) // 3} tokens)'
+                f'every {config.decision_interval}s  system prompt {len(prompt)} chars (~{tokens(prompt)} tokens)'
             )
+            if config.think is not None:
+                # Note (ruidu): without the lessons of earlier matches, which the runner reads from memory_dir.
+                prompt = think_system_prompt(config, match, team, [])
+                print(
+                    f'      long think via {config.think.gateway} every {config.think.interval}s  '
+                    f'system prompt {len(prompt)} chars (~{tokens(prompt)} tokens)'
+                )
         if team.control != 'agent':
             print(f'  heroes: {", ".join(team.heroes)}')
-    print('\n' + system_prompt(match.radiant.agents[0], match, match.radiant.team_id))
+    print('\n' + act_system_prompt(match.radiant.agents[0], match, match.radiant.team_id))
 
 
 def main():
@@ -141,6 +153,7 @@ def main():
         winner = None
         try:
             _, info = env.reset()
+            runner.sense(info['world_states'])
             for step in range(args.steps):
                 masks, player_ids = hero_views(info, match.mode, agent_team.team_id, rows)
                 slots = env.unwrapped.cast_slots()
@@ -156,6 +169,7 @@ def main():
                 for row, reason in reasons:
                     queue_for_hero(env.unwrapped.queue_label, match.mode, row, reason)
                 _, _, terminated, truncated, info = env.step(pack(hero_actions, match.mode))
+                runner.sense(info['world_states'])
                 if step % 100 == 0:
                     print(
                         'step {} t={:.0f} spent ${:.3f} {:.1f} steps/s'.format(
@@ -169,6 +183,18 @@ def main():
                     winner = info['winner']
                     print(f'match over at t={info["dota_time"]:.0f}, winner: {winner}')
                     break
+            if match.memory_dir is not None:
+                # Note (ruidu): a reply from a thinking model can take a while; give each twice its gateway's timeout.
+                timeout = 2 * max(
+                    (
+                        match.gateways[config.think.gateway].timeout_seconds
+                        for config in agent_team.agents
+                        if config.think
+                    ),
+                    default=0.0,
+                )
+                print(f'reviewing the match, lessons go to {match.memory_dir}')
+                review.review(runner.thinks, info['world_state'], runner.player_ids, winner, stamp, timeout)
         finally:
             runner.close()
             env.close()
@@ -177,11 +203,12 @@ def main():
 
     for entry in summary:
         print(
-            '{:20} {:>5} req {:>5} held {:>4} rejected {:>7} tok ${:.4f} {}s mean'.format(
+            '{:20} {:>5} req {:>5} held {:>4} rejected {:>4} thinks {:>7} tok ${:.4f} {}s mean'.format(
                 entry['nickname'],
                 entry['requests'],
                 entry['held_frames'],
                 entry['rejected_actions'],
+                entry['thinks'],
                 entry['input_tokens'] + entry['output_tokens'],
                 entry['usd'],
                 entry['mean_latency'],

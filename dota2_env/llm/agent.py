@@ -1,9 +1,10 @@
-"""What one LLM agent reads and what its reply means: prompt text in, one action per line out.
+"""What the per-second channel of an LLM agent reads and what its reply means: prompt text in, one action per line out.
 
 Pure functions, no threads and no HTTP, so a test can drive them against a hand-built world state.
-The wording of both messages lives in the Jinja templates in prompts/; this module only hands them data.
-A reply is read a line at a time while it streams in (read_line), and each step is resolved on the frame
-it goes out on (resolve), because legality and unit rows belong to that frame, not to the one the model saw.
+The wording lives in the Jinja templates in prompts/ (act_* here, think_* and review_* in think.py, around the
+partials every system prompt shares); this module only hands them data. A reply of any channel is read a line at a
+time while it streams in (read_line), and each step is resolved on the frame it goes out on (resolve), because
+legality and unit rows belong to that frame, not to the one the model saw.
 """
 
 import math
@@ -21,15 +22,38 @@ from dota2_env.bridge.constants import RUNE_BOUNTY, RUNE_WATER, TEAM_RADIANT
 from dota2_env.bridge.protos.dota_gcmessages_common_bot_script_pb2 import CMsgBotWorldState
 from dota2_env.game_text import display_name, hero_text, item_text, load_records
 from dota2_env.llm.config import AgentConfig, MatchConfig, Position
+from dota2_env.llm.memory import Call, Directive
 from dota2_env.map_features import MapEvent, load_events, read_events
 from dota2_env.observation import N_TALENTS, TALENT_LEVELS
-from dota2_env.text import LANES, RUNE_TYPES, TEAMS, clock, event_name, map_reference, spot_name
+from dota2_env.text import LANES, RUNE_TYPES, TEAMS, clock, event_name, map_reference, spot_name, unit_name
 
 CHAT_LIMIT = 80  # all-chat is a taunt channel, not a place to think out loud
 REASON_LIMIT = 200
+INTENT_LIMIT = 40  # an intent is shown in every turn after it, to its own channel and to the teammates'
+CALL_LIMIT = 40
+PLAN_LIMIT = 150
+NOTE_LIMIT = 60
+LESSON_LIMIT = 80
 TICKS_PER_GAME_SECOND = 30
+WHOLE_TEAM = ('全队', 'ALL')  # what a CALL names instead of a nickname to reach every teammate
 
-# Note (ruidu): the letters are the ones system.jinja writes the actions with. MOVE and CAST_DIRECTION tell a
+LineKind = Literal['step', 'reason', 'say', 'intent', 'call', 'ask', 'plan', 'goal', 'note', 'forget', 'lesson']
+# Note (ruidu): every tag a reply line of any channel can start with, and how much of what follows it is kept; the
+# runner only acts on the tags of the channel the reply came from. Anything else is a step.
+TAGS: dict[str, int] = {
+    'REASON': REASON_LIMIT,
+    'SAY': CHAT_LIMIT,
+    'INTENT': INTENT_LIMIT,
+    'CALL': CALL_LIMIT + 20,  # the teammate's nickname comes first
+    'ASK': REASON_LIMIT,
+    'PLAN': PLAN_LIMIT,
+    'GOAL': 40,
+    'NOTE': NOTE_LIMIT,
+    'FORGET': 10,
+    'LESSON': LESSON_LIMIT + 10,  # the kind comes first
+}
+
+# Note (ruidu): the letters are the ones act_system.jinja writes the actions with. MOVE and CAST_DIRECTION tell a
 # point from a direction only by how many numbers follow, so every form an action takes is listed; a MOVE with a
 # point goes out as the env's MOVE_TO, which lets the client plan the whole way, and TP keeps its point as it is.
 FORMS: dict[str, tuple[tuple[str, ...], ...]] = {
@@ -49,6 +73,7 @@ FORMS: dict[str, tuple[tuple[str, ...], ...]] = {
 FIELD_KEYS = {'D': 'move', 'N': 'target', 'S': 'ability', 'R': 'rune', 'T': 'talent'}
 RE_KIND_END = re.compile(r'[^A-Za-z_]')
 RE_NUMBER = re.compile(r'[+-]?\d{1,9}(\.\d+)?')  # nine digits cover any coordinate and cannot overflow a float
+RE_COMMA = re.compile('[,，]')  # a model writing Chinese often puts a full-width comma after a field
 
 # Note (ruidu): the names are the client's own (DOTA_LaneSelection* in dota_english.txt and dota_schinese.txt).
 POSITION_NAME: dict[Position, str] = {
@@ -72,10 +97,11 @@ PROMPTS.filters['display_name'] = display_name
 PROMPTS.filters['clock'] = clock
 PROMPTS.filters['spot_name'] = spot_name
 PROMPTS.filters['event_name'] = event_name
+PROMPTS.filters['unit_name'] = unit_name
 PROMPTS.globals['positions'] = POSITION_NAME
-# Note (ruidu): bound once so an edit to user.jinja while a match runs cannot reach decide(), where a half-written
-# template would end the match; system.jinja is looked up per call instead, see system_prompt().
-USER = PROMPTS.get_template('user.jinja')
+# Note (ruidu): bound once so an edit to act_user.jinja while a match runs cannot reach decide(), where a half-written
+# template would end the match; the system templates are looked up per call instead, see hero_context().
+USER = PROMPTS.get_template('act_user.jinja')
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -89,56 +115,80 @@ class Note:
     error: str | None = None
 
 
-def system_prompt(agent: AgentConfig, match: MatchConfig, team_id: int) -> str:
-    """Fixed for the whole match, so gateways that cache prompt prefixes actually get a hit."""
+def hero_context(agent: AgentConfig, match: MatchConfig, team_id: int) -> dict[str, object]:
+    """What the partials every system prompt includes need: the agent, its side, the map and the hero's skills."""
     radiant = team_id == TEAM_RADIANT
-    # Note (ruidu): looked up on every call, not once at import, so scripts/prompt_debugger.py renders an edited
-    # system.jinja without a restart; jinja re-reads the file only when its mtime changed, and a match calls this
-    # once per agent at start.
-    template = PROMPTS.get_template('system.jinja')
     events: dict[str, list[MapEvent]] = {}
     for event in load_events(match.mode):
         events.setdefault(event.kind, []).append(event)
-    return template.render(
-        agent=agent,
-        match=match,
-        side=TEAMS[team_id]['zh'],
-        safe_lane=LANES['bottom' if radiant else 'top']['zh'],
-        off_lane=LANES['top' if radiant else 'bottom']['zh'],
-        map_reference=map_reference(),
-        skills=hero_text(agent.hero),
-        talents=[display_name(name) for name in load_records('heroes')[agent.hero]['talents'][:N_TALENTS]],
-        talent_levels=TALENT_LEVELS,
-        tp=load_records('items')[actions.TP_SCROLL]['values'],
-        events=events,
-        event_values=read_events()['values'],
-        power_runes=[names['zh'] for rune, names in RUNE_TYPES.items() if rune not in (RUNE_BOUNTY, RUNE_WATER)],
-        frame=match.ticks_per_observation / TICKS_PER_GAME_SECOND,
-        chat_limit=CHAT_LIMIT,
-    ).removesuffix('\n')
+    return {
+        'agent': agent,
+        'match': match,
+        'side': TEAMS[team_id]['zh'],
+        'safe_lane': LANES['bottom' if radiant else 'top']['zh'],
+        'off_lane': LANES['top' if radiant else 'bottom']['zh'],
+        'map_reference': map_reference(),
+        'skills': hero_text(agent.hero),
+        'talents': [display_name(name) for name in load_records('heroes')[agent.hero]['talents'][:N_TALENTS]],
+        'talent_levels': TALENT_LEVELS,
+        'events': events,
+        'event_values': read_events()['values'],
+        'power_runes': [names['zh'] for rune, names in RUNE_TYPES.items() if rune not in (RUNE_BOUNTY, RUNE_WATER)],
+    }
 
 
-def user_prompt(
+def act_system_prompt(agent: AgentConfig, match: MatchConfig, team_id: int) -> str:
+    """Fixed for the whole match, so gateways that cache prompt prefixes actually get a hit."""
+    # Note (ruidu): looked up on every call, not once at import, so scripts/prompt_debugger.py renders an edited
+    # template without a restart; jinja re-reads a file only when its mtime changed, and a match calls this once per
+    # agent at start.
+    return (
+        PROMPTS.get_template('act_system.jinja')
+        .render(
+            **hero_context(agent, match, team_id),
+            tp=load_records('items')[actions.TP_SCROLL]['values'],
+            frame=match.ticks_per_observation / TICKS_PER_GAME_SECOND,
+            chat_limit=CHAT_LIMIT,
+            intent_limit=INTENT_LIMIT,
+            call_limit=CALL_LIMIT,
+        )
+        .removesuffix('\n')
+    )
+
+
+def act_user_prompt(
     state: str,
     items: list[str],
-    teammates: list[tuple[AgentConfig, CMsgBotWorldState.Unit | None]],
+    teammates: list[tuple[AgentConfig, CMsgBotWorldState.Unit | None, tuple[float, str] | None]],
     history: Sequence[Note],
+    directive: Directive | None = None,
+    dota_time: float = 0.0,
+    goal_distance: float | None = None,
+    calls: Sequence[tuple[str, Call]] = (),
+    intent: tuple[float, str] | None = None,
 ) -> str:
-    """One turn's message: what the held items do, the hero's state, its teammates and its last commands.
+    """One turn's message: what the held items do, the long think's plan, the hero's state and how far it is from
+    the plan's goal, its teammates and their intents, the calls to it, its own intent and its last commands.
 
     Items the data does not know (a newer client) are left out; history is oldest first, empty until a reply.
+    teammates carry each one's INTENT and since when; calls carry the caller's nickname.
     """
     known = load_records('items')
     return USER.render(
         items=[item_text(name) for name in dict.fromkeys(items) if name in known],
+        directive=directive,
         state=state,
+        dota_time=dota_time,
+        goal_distance=goal_distance,
         teammates=teammates,
+        calls=calls,
+        intent=intent,
         history=history,
     ).removesuffix('\n')
 
 
-def read_line(line: str) -> tuple[Literal['step', 'reason', 'say'] | None, str]:
-    """What one line of a reply is: a step of the plan (the line itself), the reason, or a taunt.
+def read_line(line: str) -> tuple[LineKind | None, str]:
+    """What one line of a reply is: a step (the line itself), or a tag of TAGS and the text after it.
 
     None for a blank line or a markdown fence. Nothing is validated here: a step is only checked
     against the frame it goes out on, by resolve().
@@ -147,13 +197,26 @@ def read_line(line: str) -> tuple[Literal['step', 'reason', 'say'] | None, str]:
     if not line or line.startswith('```'):
         return None, ''
     kind = RE_KIND_END.split(line, maxsplit=1)[0]
-    # Note (ruidu): what follows REASON and SAY is Chinese, so the comma after them often comes out full width.
-    text = line[len(kind) :].lstrip(' ,，:：')
-    if kind.upper() == 'REASON':
-        return 'reason', text[:REASON_LIMIT]
-    if kind.upper() == 'SAY':
-        return 'say', text[:CHAT_LIMIT]
-    return 'step', line
+    limit = TAGS.get(kind.upper())
+    if limit is None:
+        return 'step', line
+    # Note (ruidu): what follows a tag is mostly Chinese, so the comma after it often comes out full width.
+    return kind.lower(), line[len(kind) :].lstrip(' ,，:：')[:limit]
+
+
+def read_call(text: str, nicknames: list[str]) -> tuple[int | None, str]:
+    """The row a CALL's text names first and the message after it; None for the whole team.
+
+    A first field that names nobody is taken as part of a message to the whole team.
+    """
+    head, rest = [*RE_COMMA.split(text, maxsplit=1), ''][:2]
+    head = head.strip()
+    lowered = [nickname.lower() for nickname in nicknames]
+    if head.lower() in lowered:
+        return lowered.index(head.lower()), rest.strip()[:CALL_LIMIT]
+    if head.upper() in WHOLE_TEAM:
+        return None, rest.strip()[:CALL_LIMIT]
+    return None, text.strip()[:CALL_LIMIT]
 
 
 def read_step(step: str) -> tuple[str, dict[str, float]]:

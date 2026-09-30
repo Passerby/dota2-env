@@ -42,6 +42,13 @@ class GatewayConfig:
 
 
 @dataclass(kw_only=True)
+class ThinkConfig:
+    gateway: str
+    interval: float = 60.0  # game seconds between long thinks when nothing happens that asks for one sooner
+    params: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(kw_only=True)
 class AgentConfig:
     nickname: str
     hero: str
@@ -49,6 +56,7 @@ class AgentConfig:
     gateway: str
     decision_interval: float = 1.0  # game seconds between requests, not wall clock
     params: dict[str, object] = field(default_factory=dict)
+    think: ThinkConfig | None = None  # the agent's long think; without one it has the per-second channel only
 
 
 @dataclass(kw_only=True)
@@ -74,6 +82,10 @@ class MatchConfig:
     plan_length: int = 1  # actions per reply, carried out one per frame; 1 is a single action as before
     history_length: int = 6  # the agent's last commands, with where its hero stood, each prompt ends with
     log_prompts: bool = False  # also store every user message in the transcript, for debugging
+    notes_limit: int = 8  # notes a long think keeps; a new one past it pushes the oldest out
+    call_seconds: float = 30.0  # game seconds a CALL stays on the blackboard
+    memory_dir: str | None = None  # lessons across matches: read by the long thinks, written by the review after
+    lessons_limit: int = 10  # newest lessons a long think's system prompt carries
     gateways: dict[str, GatewayConfig]
     radiant: TeamConfig
     dire: TeamConfig
@@ -121,6 +133,19 @@ def build_team(team_id: int, data: dict[str, object], gateways: dict[str, Gatewa
             raise ValueError(f'position must be one of {POSITIONS}, got {position!r}')
         if entry['gateway'] not in gateways:
             raise ValueError(f'agent {entry["nickname"]!r} uses undefined gateway {entry["gateway"]!r}')
+        think = None
+        if entry.get('think') is not None:
+            if entry['think']['gateway'] not in gateways:
+                raise ValueError(
+                    f'agent {entry["nickname"]!r} thinks through undefined gateway {entry["think"]["gateway"]!r}'
+                )
+            think = ThinkConfig(
+                gateway=str(entry['think']['gateway']),
+                interval=float(entry['think'].get('interval', 60.0)),
+                params=dict(entry['think'].get('params') or {}),
+            )
+            if think.interval <= 0:
+                raise ValueError(f'agent {entry["nickname"]!r} needs a think interval above 0')
         agents.append(
             AgentConfig(
                 nickname=str(entry['nickname']),
@@ -129,6 +154,7 @@ def build_team(team_id: int, data: dict[str, object], gateways: dict[str, Gatewa
                 gateway=str(entry['gateway']),
                 decision_interval=float(entry.get('decision_interval', 1.0)),
                 params=dict(entry.get('params') or {}),
+                think=think,
             )
         )
     heroes = [agent.hero for agent in agents] if control == 'agent' else [str(hero) for hero in data['heroes']]
@@ -158,6 +184,8 @@ def load_match(path: str) -> MatchConfig:
         raise ValueError('plan_length must be at least 1')
     if settings.get('history_length', 1) < 1:
         raise ValueError('history_length must be at least 1')
+    if settings.get('notes_limit', 1) < 1:
+        raise ValueError('notes_limit must be at least 1')
     if 'agent' not in (radiant.control, dire.control):
         raise ValueError('at least one team must have control: agent, otherwise no LLM plays')
     # All Pick will not hand the same hero to both sides, and a repeat inside one team is a wasted slot.

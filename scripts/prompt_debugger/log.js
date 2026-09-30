@@ -13,6 +13,11 @@ export const stepText = (step) => (typeof step === 'string' ? step : JSON.string
 
 const heroKey = (record) => `${record.team}/${record.nickname}`;
 
+// The records of an agent's replies and the channel each comes from: the per-second channel, the long think, and
+// the review after the match.
+const CHANNELS = { decision: 'act', think: 'think', review: 'review' };
+export const CHANNEL_NAMES = { act: '每秒', think: '长思考', review: '复盘' };
+
 // Built again from every record loaded so far whenever more arrive, so no link is ever kept half made.
 export function buildIndex(records) {
   const heroes = new Map();
@@ -31,6 +36,7 @@ export function buildIndex(records) {
         entries: [],
         rejected: [],
         byDecidedAt: new Map(),
+        last: new Map(), // channel -> the latest entry of it, the one a new entry is compared with
       });
     }
     return heroes.get(key);
@@ -38,11 +44,13 @@ export function buildIndex(records) {
   for (const record of records) {
     if (record.kind === 'agent') {
       heroOf(record).header = record;
-    } else if (record.kind === 'decision') {
+    } else if (Object.hasOwn(CHANNELS, record.kind)) {
       const hero = heroOf(record);
-      const entry = { i: entries.length, record, hero, prev: hero.entries.at(-1) ?? null, rejected: [] };
+      const channel = CHANNELS[record.kind];
+      const entry = { i: entries.length, record, hero, channel, prev: hero.last.get(channel) ?? null, rejected: [] };
+      hero.last.set(channel, entry);
       hero.entries.push(entry);
-      hero.byDecidedAt.set(record.decided_at, entry);
+      if (channel === 'act') hero.byDecidedAt.set(record.decided_at, entry);
       entries.push(entry);
     } else if (record.kind === 'rejected') {
       heroOf(record).rejected.push(record);
@@ -84,27 +92,35 @@ function planLength(heroes, entries) {
   const header = [...heroes.values()].find((hero) => hero.header)?.header;
   if (header) return header.plan_length;
   let longest = 0;
-  for (const entry of entries) longest = Math.max(longest, (entry.record.plan ?? []).length);
+  for (const entry of entries) {
+    if (entry.channel === 'act') longest = Math.max(longest, (entry.record.plan ?? []).length);
+  }
   return longest || null;
 }
 
-// What the page knows of a hero, from its header, else the summary, else the --config file.
-export function heroInfo(hero, meta) {
+// What the page knows of a hero and one of its channels, from its header, else the summary, else the --config file.
+// The review's system prompt is not in the transcript, only rebuilt; neither is anything of the older ones.
+export function heroInfo(hero, meta, channel = 'act') {
   const config = (meta.agents ?? []).find((agent) => agent.team === hero.team && agent.nickname === hero.nickname);
   const known = hero.header ?? hero.summary ?? config ?? {};
+  const thinking = channel !== 'act';
+  const think = hero.header?.think ?? null;
   return {
     hero: known.hero ?? null,
     position: known.position ?? null,
-    gateway: known.gateway ?? null,
-    model: hero.header?.model ?? null,
-    system: hero.header?.system ?? null,
+    channel,
+    gateway: thinking ? (think?.gateway ?? config?.think?.gateway ?? null) : (known.gateway ?? null),
+    model: thinking ? (think?.model ?? null) : (hero.header?.model ?? null),
+    params: thinking ? (think?.params ?? null) : (hero.header?.params ?? null),
+    system: channel === 'think' ? (think?.system ?? null) : thinking ? null : (hero.header?.system ?? null),
     config: config ?? null,
   };
 }
 
 export const heroName = (meta, hero) => (hero ? (meta.heroes[hero] ?? hero) : '');
 
-export const hasProblem = (entry) => Boolean(entry.record.error) || entry.rejected.length > 0;
+export const hasProblem = (entry) =>
+  Boolean(entry.record.error) || entry.rejected.length > 0 || (entry.record.problems ?? []).length > 0;
 
 export function matches(entry, term) {
   if (!term) return true;
@@ -126,12 +142,14 @@ export function quantiles(values) {
   };
 }
 
+// The per-second channel's decisions; tokens and money are every channel's.
 export function heroStats(hero) {
-  const records = hero.entries.map((entry) => entry.record);
-  const total = (key) => records.reduce((sum, record) => sum + (record[key] ?? 0), 0);
+  const records = hero.entries.filter((entry) => entry.channel === 'act').map((entry) => entry.record);
+  const total = (key) => hero.entries.reduce((sum, entry) => sum + (entry.record[key] ?? 0), 0);
   const finite = (values) => values.filter((value) => Number.isFinite(value));
   return {
     decisions: records.length,
+    thinks: hero.entries.filter((entry) => entry.channel === 'think').length,
     errors: records.filter((record) => record.error).length,
     rejected: hero.rejected.length,
     inputTokens: total('input_tokens'),
@@ -149,11 +167,34 @@ export function ranking(texts) {
   return [...counts].sort((a, b) => b[1] - a[1]);
 }
 
-// Every line of a logged reply, told apart the way the runner read it: the leading word decides REASON and SAY
+// The words a reply line can start with that make it no step (agent.TAGS), and those each channel acts on.
+const TAG_WORDS = ['REASON', 'SAY', 'INTENT', 'CALL', 'ASK', 'PLAN', 'GOAL', 'NOTE', 'FORGET', 'LESSON'];
+const CHANNEL_TAGS = {
+  act: ['REASON', 'SAY', 'INTENT', 'CALL', 'ASK'],
+  think: ['PLAN', 'GOAL', 'NOTE', 'FORGET', 'CALL', 'REASON'],
+  review: ['LESSON', 'REASON'],
+};
+
+// What a tagged line is to the channel it came in on: its tag, or unused for a tag the channel ignores.
+export function tagOf(line, channel) {
+  const word = line.trim().match(/^[A-Za-z_]*/)[0].toUpperCase();
+  if (!TAG_WORDS.includes(word)) return null;
+  return CHANNEL_TAGS[channel].includes(word) ? word.toLowerCase() : 'unused';
+}
+
+// Every line of a logged reply, told apart the way the runner read it: the leading word decides the tags
 // (agent.read_line), and the plan is the step lines in order, so the lines that are not in it were dropped.
-// null for the transcripts from before replies were plain lines.
+// A long think or a review has no steps, only tags. null for the transcripts from before replies were plain lines.
 export function readReply(entry, planLength) {
   const { reply, plan } = entry.record;
+  if (entry.channel !== 'act') {
+    if (typeof reply !== 'string') return null;
+    return reply.split('\n').map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('```')) return { line, kind: 'skip' };
+      return { line, kind: tagOf(trimmed, entry.channel) ?? 'unused' };
+    });
+  }
   if (typeof reply !== 'string' || !Array.isArray(plan) || !plan.every((step) => typeof step === 'string')) {
     return null;
   }
@@ -163,8 +204,8 @@ export function readReply(entry, planLength) {
   return reply.split('\n').map((line) => {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('```')) return { line, kind: 'skip' };
-    const word = trimmed.match(/^[A-Za-z_]*/)[0].toUpperCase();
-    if (word === 'REASON' || word === 'SAY') return { line, kind: word.toLowerCase() };
+    const tag = tagOf(trimmed, 'act');
+    if (tag) return { line, kind: tag };
     if (steps < plan.length && trimmed === plan[steps]) {
       steps += 1;
       return { line, kind: 'step', n: steps, rejected: rejections.get(trimmed)?.shift() ?? null };

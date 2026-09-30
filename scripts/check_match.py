@@ -27,6 +27,9 @@ def main():
         records = [json.loads(line) for line in f]
     decisions = [record for record in records if record['kind'] == 'decision']
     rejected = [record for record in records if record['kind'] == 'rejected']
+    thinks = [record for record in records if record['kind'] == 'think']
+    events = [record for record in records if record['kind'] == 'event']
+    reviews = [record for record in records if record['kind'] == 'review']
     summary = next((record for record in records if record['kind'] == 'summary'), None)
     if not decisions:
         raise SystemExit('no decision records: the run never got a reply out of any gateway')
@@ -83,17 +86,56 @@ def main():
     else:
         print('\nno reasons in this transcript (the model never wrote a REASON line)')
 
+    if thinks:
+        print(f'\n{len(thinks)} long thinks')
+        median, p90, worst = quantiles([record['latency'] for record in thinks])
+        print(f'  latency  median {median:.2f}s  p90 {p90:.2f}s  worst {worst:.2f}s')
+        median, p90, worst = quantiles([record['dota_time'] - record['decided_at'] for record in thinks])
+        print(f'  staleness when the whole reply is in  median {median:.1f}s  p90 {p90:.1f}s  worst {worst:.1f}s')
+        asked = collections.Counter(trigger for record in thinks for trigger in record['triggers'])
+        print('  asked by  ' + '  '.join(f'{name} {n}' for name, n in asked.most_common()))
+        failed = collections.Counter(record['error'] for record in thinks if record['error'])
+        print(
+            f'  replies without a plan  {sum(failed.values())}'
+            + (f'  e.g. {failed.most_common(1)[0][0]}' if failed else '')
+        )
+        plans = [record['plan'] for record in thinks if record['plan']]
+        step = max(1, len(plans) // args.reasons)
+        for plan in plans[::step][: args.reasons]:
+            print(f'  {plan}')
+    intents = [record['intent'] for record in decisions if record.get('intent')]
+    calls = [call for record in decisions + thinks for call in record.get('calls') or []]
+    print(f'\nintents written {len(intents)}, calls made {len(calls)}' + (f'  e.g. {calls[0]!r}' if calls else ''))
+    if events:
+        happened = collections.Counter(record['event'] for record in events)
+        print('events seen  ' + '  '.join(f'{name} {n}' for name, n in happened.most_common()))
+    if reviews:
+        lessons = [lesson['text'] for record in reviews for lesson in record['lessons']]
+        print(f'{len(reviews)} reviews, {len(lessons)} lessons' + (f'  e.g. {lessons[0]!r}' if lessons else ''))
+
     said = [record['say'] for record in decisions if record.get('say')]
     print(f'\ntaunts sent: {len(said)}' + (f'  e.g. {said[0]!r}' if said else ''))
     print(f'prompts stored: {"yes" if any("prompt" in record for record in decisions) else "no (set log_prompts)"}')
 
     if summary:
         print()
-        header = ('nickname', 'req', 'reply', 'net_err', 'rejected', 'steps', 'held', 'tokens', 'usd', 'latency')
-        print('{:<10}{:>5}{:>6}{:>8}{:>9}{:>7}{:>6}{:>9}{:>9}{:>9}'.format(*header))
+        header = (
+            'nickname',
+            'req',
+            'reply',
+            'net_err',
+            'rejected',
+            'steps',
+            'held',
+            'thinks',
+            'tokens',
+            'usd',
+            'latency',
+        )
+        print('{:<10}{:>5}{:>6}{:>8}{:>9}{:>7}{:>6}{:>7}{:>9}{:>9}{:>9}'.format(*header))
         for entry in summary['agents']:
             print(
-                '{:<10}{:>5}{:>6}{:>8}{:>9}{:>7}{:>6}{:>9}{:>9.4f}{:>9}'.format(
+                '{:<10}{:>5}{:>6}{:>8}{:>9}{:>7}{:>6}{:>7}{:>9}{:>9.4f}{:>9}'.format(
                     entry['nickname'],
                     entry['requests'],
                     entry['replies'],
@@ -101,6 +143,7 @@ def main():
                     entry['rejected_actions'],
                     entry.get('planned_steps', 0),
                     entry['held_frames'],
+                    entry.get('thinks', 0),
                     entry['input_tokens'] + entry['output_tokens'],
                     entry['usd'],
                     entry['mean_latency'],

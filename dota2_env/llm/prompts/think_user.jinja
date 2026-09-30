@@ -1,0 +1,91 @@
+{# The long think's user message, rendered for every long think (think.think_user_prompt): why it was asked, the whole
+   match as the team sees it, what happened since the last one, and how its hero did with the last plan. #}
+{% from 'partials/event.jinja' import event_text with context %}
+这次想的原因：
+{% for trigger in triggers %}
+{% if trigger.kind == 'start' %}
+  开局，这是第一次
+{% elif trigger.kind == 'timer' %}
+  定时，距上次想已经 {{ (trigger.dota_time - since) | clock }}
+{% elif trigger.kind == 'call' %}
+  {{ trigger.dota_time | clock }} {{ nicknames[trigger.row] }}喊你：{{ trigger.text }}
+{% elif trigger.kind == 'ask' %}
+  {{ trigger.dota_time | clock }} 操作你英雄的模型请你重新想：{{ trigger.text }}
+{% elif trigger.kind == 'goal' %}
+  {{ trigger.dota_time | clock }} 英雄到了目标点
+{% elif trigger.kind == 'death' %}
+  {{ trigger.dota_time | clock }} 你阵亡了{{ '，被' ~ (trigger.event.killer | unit_name) ~ '击杀' if trigger.event.killer else '' }}
+{% else %}
+  {{ trigger.dota_time | clock }} {{ event_text(trigger.event) }}
+{% endif %}
+{% endfor %}
+
+时间 {{ now | clock }}，我们是{{ side }}，击杀 {{ score[0] }} : {{ score[1] }}。
+
+我方英雄（K/D/A）：
+{% for mate in mates %}
+  {{ mate.config.nickname }}{{ '（你）' if loop.index0 == row else '' }} {{ positions[mate.config.position] }} {{ mate.config.hero | display_name }}{{ ' %d/%d/%d' | format(mate.player.kills, mate.player.deaths, mate.player.assists) if mate.player else '' }}{% if mate.player and not mate.player.is_alive %} 阵亡{% elif mate.hero %} lvl {{ mate.hero.level }} hp {{ '%.0f' | format(100 * mate.hero.health / mate.hero.health_max) }}% mana {{ '%.0f' | format(100 * mate.hero.mana / [mate.hero.mana_max, 1] | max) }}% 金钱 {{ mate.hero.reliable_gold + mate.hero.unreliable_gold }} lh/dn {{ mate.hero.last_hits }}/{{ mate.hero.denies }} 在 ({{ '%.0f' | format(mate.hero.location.x) }}, {{ '%.0f' | format(mate.hero.location.y) }}){% else %} 状态未上报{% endif %}{{ ' 物品：' ~ (mate.items | map('display_name') | join('、')) if mate.items else '' }}
+{% if loop.index0 != row and mate.directive %}
+    计划（{{ mate.directive.decided_at | clock }} 定）：{{ mate.directive.plan }}
+{% endif %}
+{% if loop.index0 != row and mate.intent %}
+    打算（{{ mate.intent[0] | clock }} 起）：{{ mate.intent[1] }}
+{% endif %}
+{% endfor %}
+
+敌方英雄（K/D/A）：
+{% for foe in foes %}
+  {{ foe.name | unit_name if foe.name else '还不知道是谁' }}{{ ' %d/%d/%d' | format(foe.player.kills, foe.player.deaths, foe.player.assists) if foe.player else '' }}{% if foe.player and not foe.player.is_alive %} 阵亡{% elif foe.hero %} lvl {{ foe.hero.level }} hp {{ '%.0f' | format(100 * foe.hero.health / foe.hero.health_max) }}% 现在看得见，在 ({{ '%.0f' | format(foe.hero.location.x) }}, {{ '%.0f' | format(foe.hero.location.y) }}){% elif foe.seen %} lvl {{ foe.seen.level }} {{ (now - foe.seen.dota_time) | clock }} 前最后一次看到，在 ({{ '%.0f' | format(foe.seen.position[0]) }}, {{ '%.0f' | format(foe.seen.position[1]) }})，当时 hp {{ '%.0f' | format(100 * foe.seen.health) }}%{% else %} 还没看到过{% endif +%}
+{% endfor %}
+
+还立着的塔：
+  我方：{% for name, health in ours %}{{ name | unit_name }} {{ '%.0f' | format(100 * health) }}%{{ '、' if not loop.last }}{% else %}没有了{% endfor +%}
+  敌方：{% for name, health in theirs %}{{ name | unit_name }} {{ '%.0f' | format(100 * health) }}%{{ '、' if not loop.last }}{% else %}没有了{% endfor +%}
+兵线：{% for wave in waves %}{{ lanes[wave.lane] }}{{ '我方' if wave.ours else '敌方' }} {{ wave.count }} 个 hp {{ '%.0f' | format(100 * wave.health) }}% 在 ({{ '%.0f' | format(wave.center[0]) }}, {{ '%.0f' | format(wave.center[1]) }}){{ '；' if not loop.last }}{% else %}看不到{% endfor +%}
+{% if coming %}
+
+接下来：
+{% for time, event in coming %}
+  {{ time | clock }} {{ event.kind | event_name }}：{{ event.spots | map('spot_name') | join(' 或 ' if event.one_of else '、') }}
+{% endfor %}
+{% endif %}
+
+上次想过以后发生的事：
+{% for event in events %}
+  {{ event.dota_time | clock }} {{ event_text(event) }}
+{% else %}
+  没什么事
+{% endfor %}
+{% if calls %}
+
+队友的呼叫：
+{% for caller, call in calls %}
+  {{ call.dota_time | clock }} {{ caller }}{{ '（对你）' if call.target is not none else '' }}：{{ call.text }}
+{% endfor %}
+{% endif %}
+
+{% if previous %}
+你上一版计划（{{ previous.decided_at | clock }} 定）：{{ previous.plan }}{{ '，目标点 (%.0f, %.0f)' | format(previous.goal[0], previous.goal[1]) if previous.goal else '' }}
+{% if progress %}
+执行情况（{{ progress.since | clock }} 以来）：走了 {{ '%.0f' | format(progress.moved) }}{% if previous.goal %}，在目标点 {{ '%.0f' | format(near_goal) }} 以内待了 {{ '%.0f' | format(progress.near_goal) }} 秒，离目标点最近 {{ '%.0f' | format(progress.closest) if progress.closest is not none else '（一直没看到英雄）' }}{% endif %}，阵亡 {{ progress.deaths }} 次{% if mates[row].hero %}，补刀 +{{ mates[row].hero.last_hits - progress.last_hits }}，金钱 {{ '%+d' | format(mates[row].hero.reliable_gold + mates[row].hero.unreliable_gold - progress.gold) }}{% endif %}
+
+{% endif %}
+{% else %}
+你还没有计划。
+{% endif %}
+{% if remarks %}
+
+操作你英雄的模型这段时间写下的打算和理由，旧的在前：
+{% for dota_time, kind, text in remarks %}
+  {{ dota_time | clock }} {{ '打算' if kind == 'intent' else '理由' }}：{{ text }}
+{% endfor %}
+{% endif %}
+
+{% if memos %}
+你的笔记：
+{% for memo in memos %}
+  [{{ loop.index }}] {{ memo.dota_time | clock }} {{ memo.text }}
+{% endfor %}
+{% else %}
+你还没有笔记。
+{% endif %}

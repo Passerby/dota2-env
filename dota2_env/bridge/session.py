@@ -11,7 +11,7 @@ from multiprocessing import Process, Queue
 from dota2_env.bridge.constants import TEAM_DIRE, TEAM_RADIANT
 from dota2_env.bridge.game import DotaGame
 from dota2_env.bridge.protos.dota_gcmessages_common_bot_script_pb2 import CMsgBotWorldState
-from dota2_env.bridge.worldstate import parse_world_state, tree_events_only, worldstate_listener
+from dota2_env.bridge.worldstate import parse_world_state, worldstate_listener
 
 RE_LUARDY = re.compile(r'LUARDY\s+(\{.*\})')
 RE_ACK = re.compile(r'ACK\s+(\{.*\})')
@@ -86,21 +86,19 @@ class DotaSession:
         )
         self._listener.start()
 
-    def observe(self, timeout: float) -> CMsgBotWorldState:
-        """Newest CMsgBotWorldState; blocks until one arrives, raises queue.Empty after timeout seconds.
+    def observe(self, timeout: float) -> list[CMsgBotWorldState]:
+        """Every frame since the last call, oldest first; blocks until one arrives, raises queue.Empty after timeout.
 
-        Tree events are deltas, so those of the frames skipped on the way are carried into it.
+        None is dropped: deaths, tree and Roshan events are deltas or counters that a skipped frame would lose.
+        A caller that acts on the newest one counts the rest in skipped_observations.
         """
-        raw = self._queue.get(timeout=timeout)
-        carried = b''
-        while True:  # skip ahead if we have fallen behind
+        frames = [parse_world_state(self._queue.get(timeout=timeout))]
+        while True:
             try:
-                newer = self._queue.get_nowait()
+                frames.append(parse_world_state(self._queue.get_nowait()))
             except queue_lib.Empty:
-                return parse_world_state(carried + raw)
-            carried += tree_events_only(parse_world_state(raw))
-            raw = newer
-            self.skipped_observations += 1
+                self.skipped_observations += len(frames) - 1
+                return frames
 
     def act(self, dota_time, actions, extra_actions=(), draw=()):
         """Write one action file. Lua runs the first of `actions` per player and all `extra_actions`.

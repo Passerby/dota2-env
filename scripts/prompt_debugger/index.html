@@ -74,6 +74,7 @@ body.no-resend #resend { display: none; }
 .badge { flex: none; align-self: center; padding: 0 4px; border-radius: 3px; font-size: 11px; line-height: 16px; }
 .badge.error { background: var(--red-bg); color: var(--red); }
 .badge.rejected { background: var(--amber-bg); color: var(--amber); }
+.badge.think { background: var(--selected); color: var(--accent); }
 .keys { padding: 4px 10px; border-top: 1px solid var(--border); }
 
 #detail { overflow: auto; min-height: 0; }
@@ -98,7 +99,7 @@ body.no-resend #resend { display: none; }
 .line.step .tag { color: var(--accent); }
 .line.failed { background: var(--red-bg); }
 .line.failed .why { color: var(--red); }
-.line.skip, .line.extra, .line.cut, .line.unplanned { color: var(--muted); }
+.line.skip, .line.extra, .line.cut, .line.unplanned, .line.unused { color: var(--muted); }
 
 .section.gap { margin-top: 10px; }
 details.section > summary { cursor: pointer; font: 12px/1.45 var(--mono); white-space: pre-wrap; word-break: break-word; }

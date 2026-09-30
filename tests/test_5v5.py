@@ -216,3 +216,16 @@ def test_every_hero_has_its_own_map(env):
     observation, *_ = env.step(NOOP)
     assert not observation['local_map'][0, tree][rows, cols].any()
     assert not np.array_equal(observation['landmarks'][0], observation['landmarks'][4])  # measured from each hero
+
+
+def test_every_frame_since_the_last_step_reaches_info_and_the_tree_table(env):
+    _, info = env.reset()
+    assert info['world_states'] and info['world_states'][-1] is info['world_state']
+    session = last_session()
+    session.frames_per_observe = 3  # the policy fell behind by two frames
+    session.tree_events.append((LONE_TREE, True))  # cut in the first of the three
+    _, _, _, _, info = env.step(NOOP)
+    times = [world_state.dota_time for world_state in info['world_states']]
+    assert len(times) == 3 and times == sorted(times) and info['world_states'][-1] is info['world_state']
+    assert not env.unwrapped.trees.standing[LONE_TREE]
+    assert info['skipped_observations'] == 2
