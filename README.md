@@ -180,6 +180,9 @@ finally:
 - 新版客户端里，**复活后站在泉水里的英雄不会出现在 worldstate 里**，直到它移动。环境此时把英雄当作站在出生点、
   只开放 MOVE 和 MOVE_TO；agent 发别的动作（包括 NOOP）时环境替它朝地图中心走一步，下一帧就恢复正常。
 - 决定胜负的那一下（第二次死亡 / 破塔）之后客户端立刻停止推送，环境从 console.log 里读胜负。
+- 当前客户端偶尔推来一帧解不开的 worldstate（`Wire format was corrupt`）。监听进程丢掉这一帧、打一条 warning 接着读，
+  这一帧里还解得开的树事件照样接到下一帧；长度前缀不像任何一帧的长度时（流失步）就重连。原因还没查清，见
+  [docs/VERSION_DIFF.md](docs/VERSION_DIFF.md) 1.5。
 - 观测的地图部分读 `dota2_env/data/map.json`，它是按客户端版本从游戏文件和 bot API 导出的（6934 / 7.41f）。
   Dota 打了地图补丁就要重跑 `scripts/extract_map.py`，否则树的编号会错位；环境发现本机客户端版本和
   `map.json` 不一致时会打 warning。见 [docs/MAP_DATA.md](docs/MAP_DATA.md)。

@@ -135,6 +135,51 @@ faulting thread 24: HLTVServerAsync
 | 匿名 SteamCMD | 只拿到 718M 的可执行文件 depot，内容 depot 报 missing license，要一个账号（DOCKER.md 第 1 节） | ✅ |
 | 并行 | 每个容器一层 overlay，4 个同时跑都是 20.0 steps/s | ✅ |
 
+## 1.5 解不开的 worldstate 帧（2026-10）
+
+**现象**：2026-10-01 一局无头 5v5 LLM 对局（macOS，ClientVersion 6942，`timescale 4`、`ticks_per_observation 6`）在游戏时间
+5:30 就结束了，没跑到步数上限。监听子进程在 `parse_world_state` 上抛
+`DecodeError: Error parsing message with type 'CMsgBotWorldState': Wire format was corrupt` 退出，worldstate 从此断流，20 秒后
+环境以 `info["error"] = "worldstate feed ended"` 截断（转录里是 `end: "feed_ended"`）。3.3 的事件探针（6938）是同一个报错，三局
+都坏在 4:15 删完那一批神符之后。
+
+**原因还没定** ⚠️：两次都只留下这一行报错，没有坏帧的字节，这一轮也没有能跑客户端的机器。离线（本仓库的 protobuf 7.36 / upb，
+本地 TCP 假服务器 + 合成帧）能确定的是：
+
+| 查了什么 | 结果 | 状态 |
+|---|---|---|
+| 这句报错是什么 | upb 的 `kUpb_DecodeStatus_Malformed`。帧被截断、半截帧后面接上下一帧、某个子消息的长度前缀差一个字节、消息后面补零，报的都是这一句；proto2 字符串里的非法 UTF-8 不报错。所以报错本身分不出原因。截断正好落在字段边界上时还**解得开**，只是少了后面的字段（`tree_events` 就在最后），这种帧监听进程看不出来 | ✅ |
+| 我们这边会不会自己读错位 | 不会：`_recv_exact` 一定读满长度前缀给的字节数，TCP 不丢不乱序。要失步，只能是客户端发了半截帧 | ✅ |
+| 旧的监听进程上四种原因各长什么样 | 一模一样：第一帧坏的就抛异常退出，后面一帧都不转发。半截帧也是立刻报错，因为那一帧自己的长度前缀是对的，读得满。所以 2026-10-01 的日志分不出是哪一种 | ✅ |
+| 失步之后读到的长度前缀 | 在合成的 5v5 规模帧（76KB）里任取 4 个字节当长度，97.8% 大于 4 MiB；真实的帧约 45KB（1v1，第 1 节）。所以给长度前缀设个上限，失步后读到的第一个前缀几乎一定认得出来 | ✅ |
+
+3.3 的三局坏在同一个游戏时刻。时序上的问题（客户端发送和改写同一份消息撞上、读得慢时只发出半截帧）不太会三次都落在同一时刻，
+所以**更像是某种对局内容让客户端序列化出了一帧坏数据**，长度前缀和流的分帧都还是对的。这是推断 ⚠️。
+
+**环境现在怎么做**（`bridge/worldstate.py`），两种情况都接得住，日志里看得出是哪种：
+
+- 长度前缀大于 `MAX_FRAME_BYTES`（4 MiB）就是流失步了：warning `worldstate stream out of sync: a length prefix of N bytes`，
+  然后走原来的断线重连，新连接从帧边界开始。⚠️ 对局中途重连客户端接不接没验证过（已知的只是同一时刻只接受一个连接）；
+  不接的话监听进程 30 秒后退出，和以前一样截断。
+- 长度正常但解不开就只丢这一帧：warning `dropped a world state that does not decode ...`，带帧长、完整的顶层字段读到第几个字节、
+  最后一个完整字段的编号和断点后的 8 个字节，然后接着读。`tree_events` 是增量，又是客户端填的最后一个字段（24，后面只有一直为空的
+  112 / 113），所以只要是完整字段、单独解得开，就和开局前那些帧的树事件一样接到下一帧前面；读不出来的就丢了，那几棵树要等它们下一次
+  倒下或长回来才对得上。
+
+本地 TCP 假服务器注入四种坏帧，跑的是真的监听进程，日志这样区分：
+
+| 原因 | 日志 | 这一帧的树事件 |
+|---|---|---|
+| 客户端发了半截帧（失步） | `dropped ...`，断点位置不定；**紧接着** `worldstate stream out of sync`，然后重连 | 丢，重连前读到一半的那一帧也丢 |
+| 子消息长度和内容对不上（帧长对） | `whole top-level fields up to byte N`，N 等于帧长，`then nothing`：分帧完整，坏在某个子消息里面 | 保住；坏的正好是一条树事件就只丢那一条 |
+| 帧被截断，长度前缀也跟着改小 | 断在帧尾附近，断点处是一个字段的开头；看帧长是不是整数（比如 65536） | 截断处之前的保住 |
+| 消息后面补了零 | 断点 = 消息的真实长度，`then 00 00 00 ...` | 保住 |
+
+**怎么定下来**：`python -u scripts/probe_worldstate.py --game-mode allpick5v5 --timescale 4 --seconds 300` 把每个解不开的帧和它
+前一帧存进 `--out`（`ws_NNNNN_undecodable.bin`、`ws_NNNNN.bin`），打印断在哪里和前后几帧的大小，然后接着读，失步就重连，顺带验证
+重连。或者直接再跑出问题的 LLM 对局 / `examples/scripted_5v5.py`，看上面两种 warning。拿到坏帧后看断在哪个字段：如果总在
+`rune_infos`（13）/ `rune_infos_deltas`（113）附近，就和 3.3 删神符的触发条件对上了。
+
 ## 2. Protobuf（`CMsgBotWorldState`）
 
 来源：SteamDatabase/Protobufs `dota2/dota_gcmessages_common_bot_script.proto`。
@@ -353,7 +398,8 @@ OrderType / TargetIndex / AbilityIndex / Position / Queue`（二进制里的键�
   圣水神符；6:00 的强化神符只报 AVAILABLE、type -1。所以文本里 `available` 后面的神符名只是"最后一次知道的种类"。
 - 探针删过神符之后，天辉那一路 world state 三局都在 4:15 那一批删完后读不下去了（`DecodeError: Wire format was corrupt`，
   第三局用的是环境自己的 `worldstate_listener` 进程，一样），有一局夜魇那一路也断了。原因没查清 ⚠️，所以探针只用服务器 VM 的
-  记录，不读 world state。正常对局里神符是被捡走的，不是被删掉的。
+  记录，不读 world state。正常对局里神符是被捡走的，不是被删掉的，但 2026-10-01 的 LLM 对局一样在 5:30 碰上了这个报错；
+  环境现在丢掉这一帧接着读，见 1.5。
 
 ## 4. Python 层
 

@@ -1,6 +1,7 @@
 import json
 import os
 import queue
+import socket
 import struct
 
 import pytest
@@ -195,3 +196,62 @@ def test_listener_forwards_every_playable_frame(monkeypatch):
     # the frame without units cannot be played; its tree events ride on with the next one
     assert [[event.tree_id for event in ws.tree_events] for ws in received] == [[1], [2], [3, 4]]
     assert received[2].dota_time == 4.0 and len(received[2].units) == 1
+
+
+DAMAGED = frame(2.0, [2, 3])
+
+
+@pytest.mark.parametrize(
+    ('raw', 'kept'),
+    [
+        pytest.param(DAMAGED.replace(b'\x5a\x02\x08', b'\x5a\x02\x0f', 1), [2, 3], id='bad bytes inside a unit'),
+        pytest.param(DAMAGED[:-4] + b'\x0f\x03\x10\x01', [2], id='bad bytes inside its last tree event'),
+        pytest.param(DAMAGED[:-1], [2], id='cut short in its last tree event'),
+        pytest.param(DAMAGED + bytes(8), [2, 3], id='zeros after the message'),
+    ],
+)
+def test_listener_drops_a_frame_that_does_not_decode_and_carries_its_readable_tree_events(
+    monkeypatch, caplog, raw, kept
+):
+    frames = [frame(1.0, [1]), raw, frame(3.0, [4], units=0), frame(4.0, [5])]
+
+    def read(sock):
+        if not frames:
+            raise EOFError
+        return frames.pop(0)
+
+    monkeypatch.setattr(worldstate, 'connect', lambda port, **kwargs: None)
+    monkeypatch.setattr(worldstate, 'read_raw_world_state', read)
+    forwarded = queue.Queue()
+    with pytest.raises(EOFError):
+        worldstate.worldstate_listener(12120, forwarded)
+    received = [worldstate.parse_world_state(forwarded.get_nowait()) for _ in range(forwarded.qsize())]
+    assert [ws.dota_time for ws in received] == [1.0, 4.0]
+    # the whole tree events of the dropped frame go on like those of the unplayable one after it
+    assert [[event.tree_id for event in ws.tree_events] for ws in received] == [[1], [*kept, 4, 5]]
+    assert 'dropped a world state that does not decode' in caplog.text
+
+
+def test_listener_reconnects_when_a_length_prefix_is_longer_than_any_frame(monkeypatch, caplog):
+    first, second = frame(1.0, [1]), frame(2.0, [2])
+    streams = [
+        # after a frame the client sent only in part, the next length prefix is read from inside a frame
+        struct.pack('<I', len(first)) + first + struct.pack('<f', 1.0),
+        struct.pack('<I', len(second)) + second,
+    ]
+
+    def connect(port, **kwargs):
+        if not streams:
+            raise EOFError
+        ours, theirs = socket.socketpair()
+        theirs.sendall(streams.pop(0))
+        theirs.close()
+        return ours
+
+    monkeypatch.setattr(worldstate, 'connect', connect)
+    forwarded = queue.Queue()
+    with pytest.raises(EOFError):
+        worldstate.worldstate_listener(12120, forwarded)
+    received = [worldstate.parse_world_state(forwarded.get_nowait()) for _ in range(forwarded.qsize())]
+    assert [[event.tree_id for event in ws.tree_events] for ws in received] == [[1], [2]]
+    assert 'worldstate stream out of sync' in caplog.text

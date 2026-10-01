@@ -62,7 +62,8 @@ docker run --rm --init -v $DOTA:/opt/dota2 dota2-env python -u examples/scripted
   hand-edit it, rerun the script (`docs/MAP_DATA.md`). Tree ids in `map.json` are the ids of world-state
   `tree_events`, which are deltas: every frame `observe()` returns, including those of `reset()`'s wait loop, must go
   through `env.trees.update()`; only the unplayable frames before the game starts are held back, their tree events
-  carried into the next one.
+  carried into the next one, and a frame that does not decode is dropped by the listener with a warning, its tree
+  events carried the same way as far as they still decode (`docs/VERSION_DIFF.md` 1.5).
 - The 5v5 env stacks `TEAM_SIZE` single-hero observations; row `i` is `info["player_ids"][i]`, which is the team's
   i-th player id ascending and the i-th name of the `heroes` tuple. Keep those three in the same order.
 - Lua lives in `bridge/lua/`; `bot_controlled.lua.tpl` is copied to `bot_<hero>.lua` per configured hero. Lua reads
@@ -87,7 +88,8 @@ docker run --rm --init -v $DOTA:/opt/dota2 dota2-env python -u examples/scripted
   state. Talent tiers are checked in python (`TALENT_LEVELS`, pairs 2k / 2k + 1), because the client's
   `CanAbilityBeUpgraded` says yes to every talent from level 10 on and then silently refuses; the automatic skill
   points (`actions.upkeep`) keep one back per open tier, through the `keep` of `DOTA_UNIT_ORDER_TRAIN_ABILITY`.
-- Client quirks the env works around (hidden hero after respawn, feed stops at match end) are documented in
+- Client quirks the env works around (hidden hero after respawn, feed stops at match end, a world state that does
+  not decode) are documented in
   `docs/VERSION_DIFF.md`; re-verify them with a real run before removing the workarounds. One of them: the Linux
   `dota.sh` exits outside Valve's sniper runtime, so on Linux `DotaGame` starts `bin/linuxsteamrt64/dota2` itself and
   sets what `dota.sh` would (`LD_LIBRARY_PATH`, `ENABLE_PATHMATCH`, the working directory; `docs/VERSION_DIFF.md` 1.4).

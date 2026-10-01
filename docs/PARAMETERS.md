@@ -141,7 +141,7 @@ LLM 对局的那份 YAML（gateway、每个英雄一个 agent、决策频率、�
 | 施法格上报 | 同上 + `behavior.lua` | 技能 0-5 / 背包格 0-5 一变就打 | 打印 `SLOTS {team, player_id, slots}`（名字 + 施法类型），`env.unwrapped.cast_slots()` 和 `ability` 掩码的数据来源（worldstate 只有物品 id，也没有施法方式） |
 | 看门狗阈值 | 引擎 | 60 秒 | 仅在不带 `-nowatchdog` 时生效 ✅ |
 | 头顶文字 | `actions.py` + `server_actions.lua` | `LABEL_BYTES=255`，白色 | `ACTION_LABEL` 设成英雄的 `SetCustomHealthLabel`，客户端自己画在血条上方；联网字符串 256 字节，中文最多 85 个字，Python 在字符之间截断 |
-| 监听队列上限 | `worldstate.py` | 2 帧 | 超出的帧在监听进程里丢弃；`observe()` 再跳到最新一帧。两处被丢掉的帧里的 `tree_events` 都会接到下一帧前面 |
+| 帧长上限 | `worldstate.py` | `MAX_FRAME_BYTES=4 MiB` | 长度前缀超过它就是流失步了（真实的帧约 45KB，帧里任取 4 个字节 98% 超过它），打 warning 后重连。长度正常但解不开的帧丢掉并打 warning，其中还解得开的 `tree_events` 和开局前那些帧的一样接到下一帧前面（[VERSION_DIFF.md](VERSION_DIFF.md) 1.5）。除此之外一帧不丢，`observe()` 全部交出 |
 | 关闭等待 | `game.py: stop_dota` | 20 秒 | SIGTERM 之后等客户端自己退出，超时才 SIGKILL |
 | 单位表 | `observation.py` | `MAX_UNITS=32`，`UNIT_RADIUS=1600` | 观测里最近单位的数量与范围 |
 | 队伍规模 | `observation.py` | `TEAM_SIZE=5` | 5v5 观测 / 动作的行数 |
